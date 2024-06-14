@@ -62,7 +62,7 @@ Deno.test(
   async function connectTLSInvalidHost() {
     await assertRejects(async () => {
       await Deno.connectTls({ hostname: "256.0.0.0", port: 3567 });
-    }, TypeError);
+    }, URIError);
   },
 );
 

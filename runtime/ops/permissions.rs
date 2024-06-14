@@ -4,10 +4,8 @@ use ::deno_permissions::parse_sys_kind;
 use ::deno_permissions::PermissionState;
 use ::deno_permissions::PermissionsContainer;
 use deno_core::error::custom_error;
-use deno_core::error::uri_error;
 use deno_core::error::AnyError;
 use deno_core::op2;
-use deno_core::url;
 use deno_core::OpState;
 use serde::Deserialize;
 use serde::Serialize;
@@ -62,13 +60,9 @@ pub fn op_query_permission(
   let perm = match args.name.as_ref() {
     "read" => permissions.read.query(path.map(Path::new)),
     "write" => permissions.write.query(path.map(Path::new)),
-    "net" => permissions.net.query(
-      match args.host.as_deref() {
-        None => None,
-        Some(h) => Some(parse_host(h)?),
-      }
-      .as_ref(),
-    ),
+    "net" => permissions
+      .net
+      .query(args.host.as_deref().map(str::parse).transpose()?),
     "env" => permissions.env.query(args.variable.as_deref()),
     "sys" => permissions
       .sys
@@ -97,13 +91,9 @@ pub fn op_revoke_permission(
   let perm = match args.name.as_ref() {
     "read" => permissions.read.revoke(path.map(Path::new)),
     "write" => permissions.write.revoke(path.map(Path::new)),
-    "net" => permissions.net.revoke(
-      match args.host.as_deref() {
-        None => None,
-        Some(h) => Some(parse_host(h)?),
-      }
-      .as_ref(),
-    ),
+    "net" => permissions
+      .net
+      .revoke(args.host.as_deref().map(str::parse).transpose()?),
     "env" => permissions.env.revoke(args.variable.as_deref()),
     "sys" => permissions
       .sys
@@ -132,13 +122,9 @@ pub fn op_request_permission(
   let perm = match args.name.as_ref() {
     "read" => permissions.read.request(path.map(Path::new)),
     "write" => permissions.write.request(path.map(Path::new)),
-    "net" => permissions.net.request(
-      match args.host.as_deref() {
-        None => None,
-        Some(h) => Some(parse_host(h)?),
-      }
-      .as_ref(),
-    ),
+    "net" => permissions
+      .net
+      .request(args.host.as_deref().map(str::parse).transpose()?),
     "env" => permissions.env.request(args.variable.as_deref()),
     "sys" => permissions
       .sys
@@ -154,14 +140,4 @@ pub fn op_request_permission(
     }
   };
   Ok(PermissionStatus::from(perm))
-}
-
-fn parse_host(host_str: &str) -> Result<(String, Option<u16>), AnyError> {
-  let url = url::Url::parse(&format!("http://{host_str}/"))
-    .map_err(|_| uri_error("Invalid host"))?;
-  if url.path() != "/" {
-    return Err(uri_error("Invalid host"));
-  }
-  let hostname = url.host_str().unwrap();
-  Ok((hostname.to_string(), url.port()))
 }

@@ -11,6 +11,7 @@ mod tcp;
 
 use deno_core::error::AnyError;
 use deno_core::OpState;
+use deno_permissions::NetHost;
 use deno_tls::rustls::RootCertStore;
 use deno_tls::RootCertStoreProvider;
 use std::path::Path;
@@ -20,9 +21,9 @@ use std::sync::Arc;
 pub const UNSTABLE_FEATURE_NAME: &str = "net";
 
 pub trait NetPermissions {
-  fn check_net<T: AsRef<str>>(
+  fn check_net(
     &mut self,
-    _host: &(T, Option<u16>),
+    _addr: (&NetHost, u16),
     _api_name: &str,
   ) -> Result<(), AnyError>;
   fn check_read(&mut self, _p: &Path, _api_name: &str) -> Result<(), AnyError>;
@@ -32,12 +33,12 @@ pub trait NetPermissions {
 
 impl NetPermissions for deno_permissions::PermissionsContainer {
   #[inline(always)]
-  fn check_net<T: AsRef<str>>(
+  fn check_net(
     &mut self,
-    host: &(T, Option<u16>),
+    addr: (&NetHost, u16),
     api_name: &str,
   ) -> Result<(), AnyError> {
-    deno_permissions::PermissionsContainer::check_net(self, host, api_name)
+    deno_permissions::PermissionsContainer::check_net(self, addr, api_name)
   }
 
   #[inline(always)]

@@ -8,6 +8,7 @@ use crate::resolve_addr::resolve_addr;
 use crate::resolve_addr::resolve_addr_sync;
 use crate::tcp::TcpListener;
 use crate::DefaultTlsOptions;
+use crate::NetHost;
 use crate::NetPermissions;
 use crate::UnsafelyIgnoreCertificateErrors;
 use deno_core::anyhow::anyhow;
@@ -15,7 +16,6 @@ use deno_core::anyhow::bail;
 use deno_core::error::bad_resource;
 use deno_core::error::custom_error;
 use deno_core::error::generic_error;
-use deno_core::error::invalid_hostname;
 use deno_core::error::AnyError;
 use deno_core::op2;
 use deno_core::v8;
@@ -31,7 +31,6 @@ use deno_tls::create_client_config;
 use deno_tls::load_certs;
 use deno_tls::load_private_keys;
 use deno_tls::new_resolver;
-use deno_tls::rustls::pki_types::ServerName;
 use deno_tls::rustls::ClientConnection;
 use deno_tls::rustls::ServerConfig;
 use deno_tls::webpki::types::CertificateDer;
@@ -292,15 +291,12 @@ where
   NP: NetPermissions + 'static,
 {
   let rid = args.rid;
-  let hostname = match &*args.hostname {
-    "" => "localhost".to_string(),
-    n => n.to_string(),
-  };
+  let server_name = args.hostname.parse::<NetHost>()?;
 
   {
     let mut s = state.borrow_mut();
     let permissions = s.borrow_mut::<NP>();
-    permissions.check_net(&(&hostname, Some(0)), "Deno.startTls()")?;
+    permissions.check_net((&server_name, 0), "Deno.startTls()")?;
   }
 
   let ca_certs = args
@@ -308,9 +304,6 @@ where
     .into_iter()
     .map(|s| s.into_bytes())
     .collect::<Vec<_>>();
-
-  let hostname_dns = ServerName::try_from(hostname.to_string())
-    .map_err(|_| invalid_hostname(&hostname))?;
 
   let unsafely_ignore_certificate_errors = state
     .borrow()
@@ -353,7 +346,7 @@ where
   let tls_config = Arc::new(tls_config);
   let tls_stream = TlsStream::new_client_side(
     tcp_stream,
-    ClientConnection::new(tls_config, hostname_dns)?,
+    ClientConnection::new(tls_config, server_name.into())?,
     TLS_BUFFER_SIZE,
   );
 
@@ -383,12 +376,17 @@ where
     .borrow()
     .try_borrow::<UnsafelyIgnoreCertificateErrors>()
     .and_then(|it| it.0.clone());
+  let hostname = addr.hostname.parse::<NetHost>()?;
+  let port = addr.port;
+  let server_name = match args.server_name {
+    Some(name) => Some(name.parse::<NetHost>()?),
+    None => None,
+  };
 
   {
     let mut s = state.borrow_mut();
     let permissions = s.borrow_mut::<NP>();
-    permissions
-      .check_net(&(&addr.hostname, Some(addr.port)), "Deno.connectTls()")?;
+    permissions.check_net((&hostname, port), "Deno.connectTls()")?;
     if let Some(path) = cert_file {
       permissions.check_read(Path::new(path), "Deno.connectTls()")?;
     }
@@ -410,13 +408,7 @@ where
     .borrow()
     .borrow::<DefaultTlsOptions>()
     .root_cert_store()?;
-  let hostname_dns = if let Some(server_name) = args.server_name {
-    ServerName::try_from(server_name)
-  } else {
-    ServerName::try_from(addr.hostname.clone())
-  }
-  .map_err(|_| invalid_hostname(&addr.hostname))?;
-  let connect_addr = resolve_addr(&addr.hostname, addr.port)
+  let connect_addr = resolve_addr(&hostname, port)
     .await?
     .next()
     .ok_or_else(|| generic_error("No resolved address found"))?;
@@ -441,7 +433,7 @@ where
 
   let tls_stream = TlsStream::new_client_side(
     tcp_stream,
-    ClientConnection::new(tls_config, hostname_dns)?,
+    ClientConnection::new(tls_config, server_name.unwrap_or(hostname).into())?,
     TLS_BUFFER_SIZE,
   );
 
@@ -492,13 +484,13 @@ where
     super::check_unstable(state, "Deno.listenTls({ reusePort: true })");
   }
 
-  {
-    let permissions = state.borrow_mut::<NP>();
-    permissions
-      .check_net(&(&addr.hostname, Some(addr.port)), "Deno.listenTls()")?;
-  }
+  let hostname = addr.hostname.parse::<NetHost>()?;
+  let port = addr.port;
+  state
+    .borrow_mut::<NP>()
+    .check_net((&hostname, port), "Deno.listenTls()")?;
 
-  let bind_addr = resolve_addr_sync(&addr.hostname, addr.port)?
+  let bind_addr = resolve_addr_sync(&hostname, port)?
     .next()
     .ok_or_else(|| generic_error("No resolved address found"))?;
 

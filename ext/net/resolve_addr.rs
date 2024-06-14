@@ -1,40 +1,49 @@
 // Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
 
+use crate::NetHost;
 use deno_core::error::AnyError;
+use either::Either;
+use std::iter::once;
 use std::net::SocketAddr;
+use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 use std::net::ToSocketAddrs;
 use tokio::net::lookup_host;
 
 /// Resolve network address *asynchronously*.
 pub async fn resolve_addr(
-  hostname: &str,
+  host: &NetHost,
   port: u16,
 ) -> Result<impl Iterator<Item = SocketAddr> + '_, AnyError> {
-  let addr_port_pair = make_addr_port_pair(hostname, port);
-  let result = lookup_host(addr_port_pair).await?;
-  Ok(result)
+  Ok(match *host {
+    NetHost::Domain(ref name) => {
+      Either::Left(lookup_host((name.as_ref(), port)).await?)
+    }
+    NetHost::Ipv4(ip) => {
+      Either::Right(once(SocketAddr::V4(SocketAddrV4::new(ip, port))))
+    }
+    NetHost::Ipv6(ip) => {
+      Either::Right(once(SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0))))
+    }
+  })
 }
 
 /// Resolve network address *synchronously*.
 pub fn resolve_addr_sync(
-  hostname: &str,
+  host: &NetHost,
   port: u16,
-) -> Result<impl Iterator<Item = SocketAddr>, AnyError> {
-  let addr_port_pair = make_addr_port_pair(hostname, port);
-  let result = addr_port_pair.to_socket_addrs()?;
-  Ok(result)
-}
-
-fn make_addr_port_pair(hostname: &str, port: u16) -> (&str, u16) {
-  // Default to localhost if given just the port. Example: ":80"
-  if hostname.is_empty() {
-    return ("0.0.0.0", port);
-  }
-
-  // If this looks like an ipv6 IP address. Example: "[2001:db8::1]"
-  // Then we remove the brackets.
-  let addr = hostname.trim_start_matches('[').trim_end_matches(']');
-  (addr, port)
+) -> Result<impl Iterator<Item = SocketAddr> + '_, AnyError> {
+  Ok(match *host {
+    NetHost::Domain(ref name) => {
+      Either::Left((name.as_ref(), port).to_socket_addrs()?)
+    }
+    NetHost::Ipv4(ip) => {
+      Either::Right(once(SocketAddr::V4(SocketAddrV4::new(ip, port))))
+    }
+    NetHost::Ipv6(ip) => {
+      Either::Right(once(SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0))))
+    }
+  })
 }
 
 #[cfg(test)]
@@ -51,7 +60,7 @@ mod tests {
       Ipv4Addr::new(127, 0, 0, 1),
       80,
     ))];
-    let actual = resolve_addr("127.0.0.1", 80)
+    let actual = resolve_addr(&"127.0.0.1".parse().unwrap(), 80)
       .await
       .unwrap()
       .collect::<Vec<_>>();
@@ -64,7 +73,10 @@ mod tests {
       Ipv4Addr::new(0, 0, 0, 0),
       80,
     ))];
-    let actual = resolve_addr("", 80).await.unwrap().collect::<Vec<_>>();
+    let actual = resolve_addr(&"".parse().unwrap(), 80)
+      .await
+      .unwrap()
+      .collect::<Vec<_>>();
     assert_eq!(actual, expected);
   }
 
@@ -74,7 +86,7 @@ mod tests {
       Ipv4Addr::new(192, 0, 2, 1),
       25,
     ))];
-    let actual = resolve_addr("192.0.2.1", 25)
+    let actual = resolve_addr(&"192.0.2.1".parse().unwrap(), 25)
       .await
       .unwrap()
       .collect::<Vec<_>>();
@@ -89,7 +101,7 @@ mod tests {
       0,
       0,
     ))];
-    let actual = resolve_addr("[2001:db8::1]", 8080)
+    let actual = resolve_addr(&"[2001:db8::1]".parse().unwrap(), 8080)
       .await
       .unwrap()
       .collect::<Vec<_>>();
@@ -98,7 +110,9 @@ mod tests {
 
   #[tokio::test]
   async fn resolve_addr_err() {
-    assert!(resolve_addr("INVALID ADDR", 1234).await.is_err());
+    assert!(resolve_addr(&"test.invalid".parse().unwrap(), 1234)
+      .await
+      .is_err());
   }
 
   #[test]
@@ -107,7 +121,7 @@ mod tests {
       Ipv4Addr::new(127, 0, 0, 1),
       80,
     ))];
-    let actual = resolve_addr_sync("127.0.0.1", 80)
+    let actual = resolve_addr_sync(&"127.0.0.1".parse().unwrap(), 80)
       .unwrap()
       .collect::<Vec<_>>();
     assert_eq!(actual, expected);
@@ -119,7 +133,9 @@ mod tests {
       Ipv4Addr::new(0, 0, 0, 0),
       80,
     ))];
-    let actual = resolve_addr_sync("", 80).unwrap().collect::<Vec<_>>();
+    let actual = resolve_addr_sync(&"".parse().unwrap(), 80)
+      .unwrap()
+      .collect::<Vec<_>>();
     assert_eq!(actual, expected);
   }
 
@@ -129,7 +145,7 @@ mod tests {
       Ipv4Addr::new(192, 0, 2, 1),
       25,
     ))];
-    let actual = resolve_addr_sync("192.0.2.1", 25)
+    let actual = resolve_addr_sync(&"192.0.2.1".parse().unwrap(), 25)
       .unwrap()
       .collect::<Vec<_>>();
     assert_eq!(actual, expected);
@@ -143,7 +159,7 @@ mod tests {
       0,
       0,
     ))];
-    let actual = resolve_addr_sync("[2001:db8::1]", 8080)
+    let actual = resolve_addr_sync(&"[2001:db8::1]".parse().unwrap(), 8080)
       .unwrap()
       .collect::<Vec<_>>();
     assert_eq!(actual, expected);
@@ -151,6 +167,6 @@ mod tests {
 
   #[test]
   fn resolve_addr_sync_err() {
-    assert!(resolve_addr_sync("INVALID ADDR", 1234).is_err());
+    assert!(resolve_addr_sync(&"test.invalid".parse().unwrap(), 1234).is_err());
   }
 }
