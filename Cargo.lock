@@ -1694,6 +1694,7 @@ dependencies = [
  "deno_core",
  "deno_permissions",
  "deno_tls",
+ "either",
  "pin-project",
  "rustls-tokio-stream",
  "serde",
@@ -1819,10 +1820,10 @@ version = "0.18.0"
 dependencies = [
  "deno_core",
  "deno_terminal",
- "fqdn",
  "libc",
  "log",
  "once_cell",
+ "rustls-pki-types",
  "serde",
  "which 4.4.2",
  "winapi",
@@ -2812,12 +2813,6 @@ checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
 ]
-
-[[package]]
-name = "fqdn"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bf664d6b0598fea5600b85cddc79e60d4c1f262f42faf75c2d77dc2164c9a8b"
 
 [[package]]
 name = "from_variant"

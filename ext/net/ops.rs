@@ -5,6 +5,7 @@ use crate::raw::NetworkListenerResource;
 use crate::resolve_addr::resolve_addr;
 use crate::resolve_addr::resolve_addr_sync;
 use crate::tcp::TcpListener;
+use crate::NetHost;
 use crate::NetPermissions;
 use deno_core::error::bad_resource;
 use deno_core::error::custom_error;
@@ -139,14 +140,16 @@ pub async fn op_net_send_udp<NP>(
 where
   NP: NetPermissions + 'static,
 {
+  let hostname = addr.hostname.parse::<NetHost>()?;
+  let port = addr.port;
+
   {
     let mut s = state.borrow_mut();
-    s.borrow_mut::<NP>().check_net(
-      &(&addr.hostname, Some(addr.port)),
-      "Deno.DatagramConn.send()",
-    )?;
+    s.borrow_mut::<NP>()
+      .check_net((&hostname, port), "Deno.DatagramConn.send()")?;
   }
-  let addr = resolve_addr(&addr.hostname, addr.port)
+
+  let addr = resolve_addr(&hostname, port)
     .await?
     .next()
     .ok_or_else(|| generic_error("No resolved address found"))?;
@@ -309,14 +312,16 @@ pub async fn op_net_connect_tcp_inner<NP>(
 where
   NP: NetPermissions + 'static,
 {
+  let hostname = addr.hostname.parse::<NetHost>()?;
+  let port = addr.port;
+
   {
-    let mut state_ = state.borrow_mut();
-    state_
-      .borrow_mut::<NP>()
-      .check_net(&(&addr.hostname, Some(addr.port)), "Deno.connect()")?;
+    let mut s = state.borrow_mut();
+    s.borrow_mut::<NP>()
+      .check_net((&hostname, port), "Deno.connect()")?;
   }
 
-  let addr = resolve_addr(&addr.hostname, addr.port)
+  let addr = resolve_addr(&hostname, port)
     .await?
     .next()
     .ok_or_else(|| generic_error("No resolved address found"))?;
@@ -360,10 +365,14 @@ where
   if reuse_port {
     super::check_unstable(state, "Deno.listen({ reusePort: true })");
   }
+
+  let hostname = addr.hostname.parse::<NetHost>()?;
+  let port = addr.port;
   state
     .borrow_mut::<NP>()
-    .check_net(&(&addr.hostname, Some(addr.port)), "Deno.listen()")?;
-  let addr = resolve_addr_sync(&addr.hostname, addr.port)?
+    .check_net((&hostname, port), "Deno.listen()")?;
+
+  let addr = resolve_addr_sync(&hostname, port)?
     .next()
     .ok_or_else(|| generic_error("No resolved address found"))?;
 
@@ -384,10 +393,13 @@ fn net_listen_udp<NP>(
 where
   NP: NetPermissions + 'static,
 {
+  let hostname = addr.hostname.parse::<NetHost>()?;
+  let port = addr.port;
   state
     .borrow_mut::<NP>()
-    .check_net(&(&addr.hostname, Some(addr.port)), "Deno.listenDatagram()")?;
-  let addr = resolve_addr_sync(&addr.hostname, addr.port)?
+    .check_net((&hostname, port), "Deno.listenDatagram()")?;
+
+  let addr = resolve_addr_sync(&hostname, port)?
     .next()
     .ok_or_else(|| generic_error("No resolved address found"))?;
 
@@ -581,9 +593,9 @@ where
     // Checks permission against the name servers which will be actually queried.
     for ns in config.name_servers() {
       let socker_addr = &ns.socket_addr;
-      let ip = socker_addr.ip().to_string();
+      let ip = socker_addr.ip().into();
       let port = socker_addr.port();
-      perm.check_net(&(ip, Some(port)), "Deno.resolveDns()")?;
+      perm.check_net((&ip, port), "Deno.resolveDns()")?;
     }
   }
 
@@ -976,9 +988,9 @@ mod tests {
   struct TestPermission {}
 
   impl NetPermissions for TestPermission {
-    fn check_net<T: AsRef<str>>(
+    fn check_net(
       &mut self,
-      _host: &(T, Option<u16>),
+      _addr: (&NetHost, u16),
       _api_name: &str,
     ) -> Result<(), AnyError> {
       Ok(())
