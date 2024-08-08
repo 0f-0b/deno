@@ -7,8 +7,8 @@ use crate::util::file_watcher::WatcherRestartMode;
 use deno_core::error::generic_error;
 use deno_core::error::AnyError;
 use deno_core::futures::StreamExt;
+use deno_core::serde::Deserialize;
 use deno_core::serde_json::json;
-use deno_core::serde_json::{self};
 use deno_core::url::Url;
 use deno_core::LocalInspectorSession;
 use deno_terminal::colors;
@@ -85,21 +85,25 @@ impl crate::worker::HmrRunner for HmrRunner {
       select! {
         biased;
         Some(notification) = session_rx.next() => {
-          let notification = serde_json::from_value::<cdp::Notification>(notification)?;
-          if notification.method == "Runtime.exceptionThrown" {
-            let exception_thrown = serde_json::from_value::<cdp::ExceptionThrown>(notification.params)?;
-            let (message, description) = exception_thrown.exception_details.get_message_and_description();
-            break Err(generic_error(format!("{} {}", message, description)));
-          } else if notification.method == "Debugger.scriptParsed" {
-            let params = serde_json::from_value::<cdp::ScriptParsed>(notification.params)?;
-            if params.url.starts_with("file://") {
-              let file_url = Url::parse(&params.url).unwrap();
-              let file_path = file_url.to_file_path().unwrap();
-              if let Ok(canonicalized_file_path) = file_path.canonicalize() {
-                let canonicalized_file_url = Url::from_file_path(canonicalized_file_path).unwrap();
-                self.script_ids.insert(canonicalized_file_url.to_string(), params.script_id);
+          let notification = cdp::Notification::deserialize(&*notification)?;
+          match notification.method.as_str() {
+            "Runtime.exceptionThrown" => {
+              let params = cdp::ExceptionThrown::deserialize(&*notification.params)?;
+              let (message, description) = params.exception_details.get_message_and_description();
+              break Err(generic_error(format!("{} {}", message, description)));
+            }
+            "Debugger.scriptParsed" => {
+              let params = cdp::ScriptParsed::deserialize(&*notification.params)?;
+              if params.url.starts_with("file://") {
+                let file_url = Url::parse(&params.url).unwrap();
+                let file_path = file_url.to_file_path().unwrap();
+                if let Ok(canonicalized_file_path) = file_path.canonicalize() {
+                  let canonicalized_file_url = Url::from_file_path(canonicalized_file_path).unwrap();
+                  self.script_ids.insert(canonicalized_file_url.to_string(), params.script_id);
+                }
               }
             }
+            _ => {}
           }
         }
         changed_paths = self.watcher_communicator.watch_for_changed_paths() => {
@@ -215,7 +219,7 @@ impl HmrRunner {
     script_id: &str,
     source: &str,
   ) -> Result<cdp::SetScriptSourceResponse, AnyError> {
-    let result = self
+    let response = self
       .session
       .post_message(
         "Debugger.setScriptSource",
@@ -227,9 +231,7 @@ impl HmrRunner {
       )
       .await?;
 
-    Ok(serde_json::from_value::<cdp::SetScriptSourceResponse>(
-      result,
-    )?)
+    Ok(Deserialize::deserialize(&*response)?)
   }
 
   async fn dispatch_hmr_event(

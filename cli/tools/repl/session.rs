@@ -35,8 +35,8 @@ use deno_core::error::AnyError;
 use deno_core::futures::channel::mpsc::UnboundedReceiver;
 use deno_core::futures::FutureExt;
 use deno_core::futures::StreamExt;
-use deno_core::serde_json;
-use deno_core::serde_json::Value;
+use deno_core::serde::Deserialize;
+use deno_core::serde_json::value::RawValue;
 use deno_core::unsync::spawn;
 use deno_core::url::Url;
 use deno_core::LocalInspectorSession;
@@ -183,7 +183,7 @@ pub struct ReplSession {
   session: LocalInspectorSession,
   pub context_id: u64,
   pub language_server: ReplLanguageServer,
-  pub notifications: Arc<Mutex<UnboundedReceiver<Value>>>,
+  pub notifications: Arc<Mutex<UnboundedReceiver<Box<RawValue>>>>,
   referrer: ModuleSpecifier,
   main_module: ModuleSpecifier,
   test_reporter_factory: Box<dyn Fn() -> Box<dyn TestReporter>>,
@@ -223,12 +223,10 @@ impl ReplSession {
 
     loop {
       let notification = notification_rx.next().await.unwrap();
-      let notification =
-        serde_json::from_value::<cdp::Notification>(notification)?;
+      let notification = cdp::Notification::deserialize(&*notification)?;
       if notification.method == "Runtime.executionContextCreated" {
-        let execution_context_created = serde_json::from_value::<
-          cdp::ExecutionContextCreated,
-        >(notification.params)?;
+        let execution_context_created =
+          cdp::ExecutionContextCreated::deserialize(&*notification.params)?;
         assert!(execution_context_created
           .context
           .aux_data
@@ -303,14 +301,15 @@ impl ReplSession {
 
   pub async fn closing(&mut self) -> Result<bool, AnyError> {
     let expression = format!(r#"{}.closed"#, *REPL_INTERNALS_NAME);
-    let closed = self
-      .evaluate_expression(&expression)
-      .await?
-      .result
-      .value
-      .unwrap()
-      .as_bool()
-      .unwrap();
+    let closed = bool::deserialize(
+      &*self
+        .evaluate_expression(&expression)
+        .await?
+        .result
+        .value
+        .unwrap(),
+    )
+    .unwrap();
 
     Ok(closed)
   }
@@ -319,7 +318,7 @@ impl ReplSession {
     &mut self,
     method: &str,
     params: Option<T>,
-  ) -> Result<Value, AnyError> {
+  ) -> Result<Box<RawValue>, AnyError> {
     self
       .worker
       .js_runtime
@@ -545,7 +544,7 @@ impl ReplSession {
       Some(args.iter().map(|a| a.into()).collect())
     };
 
-    let inspect_response = self
+    let response = self
       .post_message_with_event_loop(
         "Runtime.callFunctionOn",
         Some(cdp::CallFunctionOnArgs {
@@ -553,7 +552,7 @@ impl ReplSession {
           object_id: None,
           arguments,
           silent: None,
-          return_by_value: None,
+          return_by_value: Some(true),
           generate_preview: None,
           user_gesture: None,
           await_promise: None,
@@ -564,9 +563,7 @@ impl ReplSession {
       )
       .await?;
 
-    let response: cdp::CallFunctionOnResponse =
-      serde_json::from_value(inspect_response)?;
-    Ok(response)
+    Ok(Deserialize::deserialize(&*response)?)
   }
 
   pub async fn get_eval_value(
@@ -592,9 +589,7 @@ impl ReplSession {
       )
       .await?;
     let value = response.result.value.unwrap();
-    let s = value.as_str().unwrap();
-
-    Ok(s.to_string())
+    Ok(String::deserialize(&*value).unwrap())
   }
 
   async fn evaluate_ts_expression(
@@ -734,7 +729,7 @@ impl ReplSession {
     &mut self,
     expression: &str,
   ) -> Result<cdp::EvaluateResponse, AnyError> {
-    self
+    let response = self
       .post_message_with_event_loop(
         "Runtime.evaluate",
         Some(cdp::EvaluateArgs {
@@ -755,8 +750,9 @@ impl ReplSession {
           unique_context_id: None,
         }),
       )
-      .await
-      .and_then(|res| serde_json::from_value(res).map_err(|e| e.into()))
+      .await?;
+
+    Ok(Deserialize::deserialize(&*response)?)
   }
 }
 

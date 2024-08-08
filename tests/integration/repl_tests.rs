@@ -61,10 +61,13 @@ fn pty_unpaired_braces() {
 }
 
 #[test]
-fn pty_bad_input() {
+fn pty_lone_surrogate() {
   util::with_pty(&["repl"], |mut console| {
-    console.write_line("'\\u{1f3b5}'[0]");
-    console.expect("Unterminated string literal");
+    console.write_line(r#""\ud83d""#);
+    console.expect(r#""\ud83d""#);
+    console.write_line(r#"throw new Error("\ud83d")"#);
+    console.expect("Uncaught Error: \u{fffd}");
+    console.expect("    at <anonymous>");
   });
 }
 

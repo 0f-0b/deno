@@ -11,7 +11,7 @@ use crate::factory::CliFactory;
 use crate::file_fetcher::FileFetcher;
 use deno_core::error::AnyError;
 use deno_core::futures::StreamExt;
-use deno_core::serde_json;
+use deno_core::serde::Deserialize;
 use deno_core::unsync::spawn_blocking;
 use deno_runtime::deno_permissions::Permissions;
 use deno_runtime::deno_permissions::PermissionsContainer;
@@ -123,14 +123,12 @@ async fn read_line_and_poll(
 
         poll_worker = true;
       }
-      message = notifications.next() => {
-        if let Some(message) = message {
-          let notification: cdp::Notification = serde_json::from_value(message).unwrap();
-          if notification.method == "Runtime.exceptionThrown" {
-            let exception_thrown: cdp::ExceptionThrown = serde_json::from_value(notification.params).unwrap();
-            let (message, description) = exception_thrown.exception_details.get_message_and_description();
-            println!("{} {}", message, description);
-          }
+      Some(message) = notifications.next() => {
+        let notification = cdp::Notification::deserialize(&*message).unwrap();
+        if notification.method == "Runtime.exceptionThrown" {
+          let params = cdp::ExceptionThrown::deserialize(&*notification.params).unwrap();
+          let (message, description) = params.exception_details.get_message_and_description();
+          println!("{} {}", message, description);
         }
       }
       _ = repl_session.run_event_loop(), if poll_worker => {

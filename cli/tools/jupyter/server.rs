@@ -17,15 +17,18 @@ use deno_core::anyhow::bail;
 use deno_core::error::AnyError;
 use deno_core::futures;
 use deno_core::parking_lot::Mutex;
+use deno_core::serde::Deserialize;
 use deno_core::serde_json;
+use deno_core::serde_json::value::to_raw_value;
 use deno_core::CancelFuture;
 use deno_core::CancelHandle;
-use jupyter_runtime::ExecutionCount;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use uuid::Uuid;
 
 use jupyter_runtime::messaging;
 use jupyter_runtime::ConnectionInfo;
+use jupyter_runtime::ExecutionCount;
 use jupyter_runtime::JupyterMessage;
 use jupyter_runtime::JupyterMessageContent;
 use jupyter_runtime::KernelControlConnection;
@@ -34,7 +37,6 @@ use jupyter_runtime::KernelShellConnection;
 use jupyter_runtime::ReplyError;
 use jupyter_runtime::ReplyStatus;
 use jupyter_runtime::StreamContent;
-use uuid::Uuid;
 
 use super::JupyterReplProxy;
 
@@ -562,32 +564,36 @@ impl JupyterServer {
           .repl_session_proxy
           .call_function_on_args(
             r#"
-          function(object) {
-            if (object instanceof Error) {
-              const name = "name" in object ? String(object.name) : "";
-              const message = "message" in object ? String(object.message) : "";
-              const stack = "stack" in object ? String(object.stack) : "";
-              return JSON.stringify({ name, message, stack });
-            } else {
-              const message = String(object);
-              return JSON.stringify({ name: "", message, stack: "" });
-            }
-          }
-        "#
+              function(object) {
+                if (object instanceof Error) {
+                  const name = "name" in object ? String(object.name) : "";
+                  const message = "message" in object ? String(object.message) : "";
+                  const stack = "stack" in object ? String(object.stack) : "";
+                  return { name, message, stack };
+                } else {
+                  const message = String(object);
+                  return { name: "", message, stack: "" };
+                }
+              }
+            "#
             .into(),
             vec![exception],
           )
           .await?;
 
         match result.result.value {
-          Some(serde_json::Value::String(str)) => {
-            if let Ok(object) =
-              serde_json::from_str::<HashMap<String, String>>(&str)
-            {
-              let get = |k| object.get(k).cloned().unwrap_or_default();
-              (get("name"), get("message"), get("stack"))
+          Some(value) => {
+            #[derive(Debug, Deserialize)]
+            struct ExceptionInfo {
+              name: String,
+              message: String,
+              stack: String,
+            }
+
+            if let Ok(info) = ExceptionInfo::deserialize(&*value) {
+              (info.name, info.message, info.stack)
             } else {
-              log::error!("Unexpected result while parsing JSON {str}");
+              log::error!("Unexpected result while parsing JSON {value}");
               ("".into(), "".into(), "".into())
             }
           }
@@ -696,7 +702,7 @@ async fn publish_result(
   execution_count: ExecutionCount,
 ) -> Result<Option<HashMap<String, serde_json::Value>>, AnyError> {
   let arg0 = cdp::CallArgument {
-    value: Some(execution_count.into()),
+    value: Some(to_raw_value(&execution_count).unwrap()),
     unserializable_value: None,
     object_id: None,
   };

@@ -21,6 +21,7 @@ use deno_core::anyhow::anyhow;
 use deno_core::anyhow::Context;
 use deno_core::error::generic_error;
 use deno_core::error::AnyError;
+use deno_core::serde::Deserialize;
 use deno_core::serde_json;
 use deno_core::sourcemap::SourceMap;
 use deno_core::url::Url;
@@ -143,27 +144,23 @@ impl CoverageCollector {
     &mut self,
     parameters: cdp::StartPreciseCoverageArgs,
   ) -> Result<cdp::StartPreciseCoverageResponse, AnyError> {
-    let return_value = self
+    let response = self
       .session
       .post_message("Profiler.startPreciseCoverage", Some(parameters))
       .await?;
 
-    let return_object = serde_json::from_value(return_value)?;
-
-    Ok(return_object)
+    Ok(Deserialize::deserialize(&*response)?)
   }
 
   async fn take_precise_coverage(
     &mut self,
   ) -> Result<cdp::TakePreciseCoverageResponse, AnyError> {
-    let return_value = self
+    let response = self
       .session
       .post_message::<()>("Profiler.takePreciseCoverage", None)
       .await?;
 
-    let return_object = serde_json::from_value(return_value)?;
-
-    Ok(return_object)
+    Ok(Deserialize::deserialize(&*response)?)
   }
 }
 

@@ -1,6 +1,7 @@
 // Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
 
 /// <https://chromedevtools.github.io/devtools-protocol/tot/>
+use deno_core::serde_json::value::RawValue;
 use deno_core::serde_json::Value;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -210,8 +211,9 @@ pub struct RemoteObject {
   #[serde(rename = "type")]
   pub kind: String,
   #[serde(default, deserialize_with = "deserialize_some")]
-  pub value: Option<Value>,
+  pub value: Option<Box<RawValue>>,
   pub unserializable_value: Option<UnserializableValue>,
+  #[serde(default, deserialize_with = "deserialize_some_string_lossy")]
   pub description: Option<String>,
   pub object_id: Option<RemoteObjectId>,
 }
@@ -224,6 +226,42 @@ where
   D: Deserializer<'de>,
 {
   Deserialize::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_some_string_lossy<'de, D>(
+  deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  use deno_core::serde::de;
+  use deno_core::serde::de::Visitor;
+  use std::fmt;
+
+  struct LossyStringVisitor;
+
+  impl<'de> Visitor<'de> for LossyStringVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+      formatter.write_str("a string")
+    }
+
+    fn visit_bytes<E: de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+      let mut s = String::with_capacity(v.len());
+      for chunk in v.utf8_chunks() {
+        s.push_str(chunk.valid());
+        for byte in chunk.invalid() {
+          if (byte & 0x40) != 0 {
+            s.push(char::REPLACEMENT_CHARACTER);
+          }
+        }
+      }
+      Ok(s)
+    }
+  }
+
+  deserializer.deserialize_bytes(LossyStringVisitor).map(Some)
 }
 
 /// <https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#type-ExceptionDetails>
@@ -250,7 +288,7 @@ impl ExceptionDetails {
 #[serde(rename_all = "camelCase")]
 pub struct CallArgument {
   #[serde(skip_serializing_if = "Option::is_none")]
-  pub value: Option<Value>,
+  pub value: Option<Box<RawValue>>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub unserializable_value: Option<UnserializableValue>,
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -370,7 +408,7 @@ pub struct TakePreciseCoverageResponse {
 #[derive(Debug, Deserialize)]
 pub struct Notification {
   pub method: String,
-  pub params: Value,
+  pub params: Box<RawValue>,
 }
 /// <https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#event-exceptionThrown>
 #[derive(Debug, Deserialize)]

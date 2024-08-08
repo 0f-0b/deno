@@ -10,7 +10,6 @@ use deno_ast::view::AssignOp;
 use deno_core::anyhow::Context as _;
 use deno_core::error::AnyError;
 use deno_core::parking_lot::Mutex;
-use deno_core::serde_json;
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -32,6 +31,7 @@ use rustyline::Modifiers;
 use rustyline::RepeatCount;
 use rustyline_derive::Helper;
 use rustyline_derive::Hinter;
+use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -51,7 +51,7 @@ pub struct EditorHelper {
 
 impl EditorHelper {
   pub fn get_global_lexical_scope_names(&self) -> Vec<String> {
-    let evaluate_response = self
+    let response = self
       .sync_sender
       .post_message(
         "Runtime.globalLexicalScopeNames",
@@ -60,9 +60,10 @@ impl EditorHelper {
         }),
       )
       .unwrap();
-    let evaluate_response: cdp::GlobalLexicalScopeNamesResponse =
-      serde_json::from_value(evaluate_response).unwrap();
-    evaluate_response.names
+
+    cdp::GlobalLexicalScopeNamesResponse::deserialize(&*response)
+      .unwrap()
+      .names
   }
 
   pub fn get_expression_property_names(&self, expr: &str) -> Vec<String> {
@@ -100,7 +101,7 @@ impl EditorHelper {
     let evaluate_result = self.evaluate_expression(object_expr)?;
     let object_id = evaluate_result.result.object_id?;
 
-    let get_properties_response = self
+    let response = self
       .sync_sender
       .post_message(
         "Runtime.getProperties",
@@ -113,10 +114,10 @@ impl EditorHelper {
         }),
       )
       .ok()?;
-    let get_properties_response: cdp::GetPropertiesResponse =
-      serde_json::from_value(get_properties_response).ok()?;
+
     Some(
-      get_properties_response
+      cdp::GetPropertiesResponse::deserialize(&*response)
+        .ok()?
         .result
         .into_iter()
         .map(|prop| prop.name)
@@ -125,7 +126,7 @@ impl EditorHelper {
   }
 
   fn evaluate_expression(&self, expr: &str) -> Option<cdp::EvaluateResponse> {
-    let evaluate_response = self
+    let response = self
       .sync_sender
       .post_message(
         "Runtime.evaluate",
@@ -148,9 +149,9 @@ impl EditorHelper {
         }),
       )
       .ok()?;
-    let evaluate_response: cdp::EvaluateResponse =
-      serde_json::from_value(evaluate_response).ok()?;
 
+    let evaluate_response =
+      cdp::EvaluateResponse::deserialize(&*response).ok()?;
     if evaluate_response.exception_details.is_some() {
       None
     } else {

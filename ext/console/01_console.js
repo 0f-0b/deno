@@ -320,39 +320,11 @@ const kWeak = 0;
 const kIterator = 1;
 const kMapEntries = 2;
 
-// Escaped control characters (plus the single quote and the backslash). Use
-// empty strings to fill up unused entries.
-// deno-fmt-ignore
-const meta = [
-  '\\x00', '\\x01', '\\x02', '\\x03', '\\x04', '\\x05', '\\x06', '\\x07', // x07
-  '\\b', '\\t', '\\n', '\\x0B', '\\f', '\\r', '\\x0E', '\\x0F',           // x0F
-  '\\x10', '\\x11', '\\x12', '\\x13', '\\x14', '\\x15', '\\x16', '\\x17', // x17
-  '\\x18', '\\x19', '\\x1A', '\\x1B', '\\x1C', '\\x1D', '\\x1E', '\\x1F', // x1F
-  '', '', '', '', '', '', '', "\\'", '', '', '', '', '', '', '', '',      // x2F
-  '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',         // x3F
-  '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',         // x4F
-  '', '', '', '', '', '', '', '', '', '', '', '', '\\\\', '', '', '',     // x5F
-  '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',         // x6F
-  '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '\\x7F',    // x7F
-  '\\x80', '\\x81', '\\x82', '\\x83', '\\x84', '\\x85', '\\x86', '\\x87', // x87
-  '\\x88', '\\x89', '\\x8A', '\\x8B', '\\x8C', '\\x8D', '\\x8E', '\\x8F', // x8F
-  '\\x90', '\\x91', '\\x92', '\\x93', '\\x94', '\\x95', '\\x96', '\\x97', // x97
-  '\\x98', '\\x99', '\\x9A', '\\x9B', '\\x9C', '\\x9D', '\\x9E', '\\x9F', // x9F
-];
-
 // https://tc39.es/ecma262/#sec-IsHTMLDDA-internal-slot
 const isUndetectableObject = (v) => typeof v === "undefined" && v !== undefined;
 
-const strEscapeSequencesReplacer = new SafeRegExp(
-  "[\x00-\x1f\x27\x5c\x7f-\x9f]",
-  "g",
-);
-
 const keyStrRegExp = new SafeRegExp("^[a-zA-Z_][a-zA-Z_0-9]*$");
 const numberRegExp = new SafeRegExp("^(0|[1-9][0-9]*)$");
-
-// TODO(wafuwafu13): Figure out
-const escapeFn = (str) => meta[StringPrototypeCharCodeAt(str, 0)];
 
 function stylizeNoColor(str) {
   return str;
@@ -1679,13 +1651,7 @@ function formatProperty(
   } else if (key === "__proto__") {
     name = "['__proto__']";
   } else if (desc.enumerable === false) {
-    const tmp = StringPrototypeReplace(
-      key,
-      strEscapeSequencesReplacer,
-      escapeFn,
-    );
-
-    name = `[${tmp}]`;
+    name = `[${replaceEscapeSequences(key)}]`;
   } else if (keyStrRegExp.test(key)) {
     name = ctx.stylize(key, "name");
   } else {
@@ -2426,35 +2392,36 @@ function quoteString(string, ctx) {
   return `${quote}${string}${quote}`;
 }
 
-const ESCAPE_PATTERN = new SafeRegExp(/([\b\f\n\r\t\v])/g);
+const ESCAPE_PATTERN = new SafeRegExp(/[\p{Cc}\p{Cs}]/gu);
 const ESCAPE_MAP = ObjectFreeze({
+  __proto__: null,
   "\b": "\\b",
-  "\f": "\\f",
-  "\n": "\\n",
-  "\r": "\\r",
   "\t": "\\t",
+  "\n": "\\n",
   "\v": "\\v",
+  "\f": "\\f",
+  "\r": "\\r",
 });
-
-const ESCAPE_PATTERN2 = new SafeRegExp("[\x00-\x1f\x7f-\x9f]", "g");
 
 // Replace escape sequences that can modify output.
 function replaceEscapeSequences(string) {
-  return StringPrototypeReplace(
-    StringPrototypeReplace(
-      string,
-      ESCAPE_PATTERN,
-      (c) => ESCAPE_MAP[c],
-    ),
-    ESCAPE_PATTERN2,
-    (c) =>
-      "\\x" +
-      StringPrototypePadStart(
-        NumberPrototypeToString(StringPrototypeCharCodeAt(c, 0), 16),
-        2,
-        "0",
-      ),
-  );
+  return StringPrototypeReplace(string, ESCAPE_PATTERN, (c) => {
+    // deno-lint-ignore prefer-primordials -- `ESCAPE_MAP` has null prototype
+    if (c in ESCAPE_MAP) {
+      return ESCAPE_MAP[c];
+    }
+    const hex = NumberPrototypeToString(StringPrototypeCharCodeAt(c, 0), 16);
+    switch (hex.length) {
+      case 1:
+        return `\\x0${hex}`;
+      case 2:
+        return `\\x${hex}`;
+      case 3:
+        return `\\u0${hex}`;
+      case 4:
+        return `\\u${hex}`;
+    }
+  });
 }
 
 // Print strings when they are inside of arrays or objects with quotes

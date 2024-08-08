@@ -19,8 +19,8 @@ use deno_core::error::AnyError;
 use deno_core::futures::FutureExt;
 use deno_core::located_script_name;
 use deno_core::resolve_url_or_path;
+use deno_core::serde::Deserialize;
 use deno_core::serde_json;
-use deno_core::serde_json::json;
 use deno_core::url::Url;
 use deno_runtime::deno_io::Stdio;
 use deno_runtime::deno_io::StdioPipe;
@@ -415,7 +415,7 @@ impl JupyterReplSession {
     &mut self,
     object_id: String,
   ) -> Option<cdp::GetPropertiesResponse> {
-    let get_properties_response = self
+    let response = self
       .repl_session
       .post_message_with_event_loop(
         "Runtime.getProperties",
@@ -429,14 +429,15 @@ impl JupyterReplSession {
       )
       .await
       .ok()?;
-    serde_json::from_value(get_properties_response).ok()
+
+    Deserialize::deserialize(&*response).ok()
   }
 
   pub async fn evaluate(
     &mut self,
     expr: String,
   ) -> Option<cdp::EvaluateResponse> {
-    let evaluate_response: serde_json::Value = self
+    let response = self
       .repl_session
       .post_message_with_event_loop(
         "Runtime.evaluate",
@@ -460,13 +461,14 @@ impl JupyterReplSession {
       )
       .await
       .ok()?;
-    serde_json::from_value(evaluate_response).ok()
+
+    Deserialize::deserialize(&*response).ok()
   }
 
   pub async fn global_lexical_scope_names(
     &mut self,
   ) -> cdp::GlobalLexicalScopeNamesResponse {
-    let evaluate_response = self
+    let response = self
       .repl_session
       .post_message_with_event_loop(
         "Runtime.globalLexicalScopeNames",
@@ -476,7 +478,8 @@ impl JupyterReplSession {
       )
       .await
       .unwrap();
-    serde_json::from_value(evaluate_response).unwrap()
+
+    Deserialize::deserialize(&*response).unwrap()
   }
 
   pub async fn evaluate_line_with_object_wrapping(
@@ -506,19 +509,31 @@ impl JupyterReplSession {
     arg0: cdp::CallArgument,
     arg1: cdp::CallArgument,
   ) -> Option<cdp::CallFunctionOnResponse> {
-    let response = self.repl_session
-    .post_message_with_event_loop(
-      "Runtime.callFunctionOn",
-      Some(json!({
-        "functionDeclaration": r#"async function (execution_count, result) {
-          await Deno[Deno.internal].jupyter.broadcastResult(execution_count, result);
-    }"#,
-        "arguments": [arg0, arg1],
-        "executionContextId": self.repl_session.context_id,
-        "awaitPromise": true,
-      })),
-    )
-    .await.ok()?;
-    serde_json::from_value(response).ok()
+    let response = self
+      .repl_session
+      .post_message_with_event_loop(
+        "Runtime.callFunctionOn",
+        Some(cdp::CallFunctionOnArgs {
+          function_declaration: r#"async function (executionCount, result) {
+            await Deno[Deno.internal].jupyter
+              .broadcastResult(executionCount, result);
+          }"#
+            .into(),
+          object_id: None,
+          arguments: Some(vec![arg0, arg1]),
+          silent: None,
+          return_by_value: None,
+          generate_preview: None,
+          user_gesture: None,
+          await_promise: Some(true),
+          execution_context_id: Some(self.repl_session.context_id),
+          object_group: None,
+          throw_on_side_effect: None,
+        }),
+      )
+      .await
+      .ok()?;
+
+    Deserialize::deserialize(&*response).ok()
   }
 }

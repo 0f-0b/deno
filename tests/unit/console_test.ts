@@ -2448,3 +2448,11 @@ Deno.test(function inspectEscapeSequencesFalse() {
     '"foo\nbar"',
   );
 });
+
+Deno.test(function inspectLoneSurrogate() {
+  const obj = Object.defineProperty({}, "\ud83d", { value: "\ud83d" });
+  assertEquals(
+    Deno.inspect(obj, { showHidden: true }),
+    '{ [\\ud83d]: "\\ud83d" }',
+  );
+});
