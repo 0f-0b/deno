@@ -12,6 +12,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use deno_core::futures::future::LocalBoxFuture;
+use deno_core::futures::FutureExt;
 use deno_core::unsync::spawn_blocking;
 use deno_io::fs::File;
 use deno_io::fs::FsError;
@@ -87,17 +89,25 @@ impl FileSystem for RealFs {
     options: OpenOptions,
     access_check: Option<AccessCheckCb>,
   ) -> FsResult<Rc<dyn File>> {
-    let std_file = open_with_access_check(options, path, access_check)?;
-    Ok(Rc::new(StdFileResourceInner::file(std_file)))
+    let (path, opts) =
+      open_options_with_access_check(options, path, access_check)?;
+    let file = opts.open(path)?;
+    Ok(Rc::new(StdFileResourceInner::file(file)))
   }
-  async fn open_async<'a>(
-    &'a self,
+  fn open_async(
+    &self,
     path: PathBuf,
     options: OpenOptions,
-    access_check: Option<AccessCheckCb<'a>>,
-  ) -> FsResult<Rc<dyn File>> {
-    let std_file = open_with_access_check(options, &path, access_check)?;
-    Ok(Rc::new(StdFileResourceInner::file(std_file)))
+    access_check: Option<AccessCheckCb>,
+  ) -> LocalBoxFuture<'static, FsResult<Rc<dyn File>>> {
+    let path_and_opts_result =
+      open_options_with_access_check(options, &path, access_check);
+    async move {
+      let (path, opts) = path_and_opts_result?;
+      let file = spawn_blocking(move || opts.open(path)).await??;
+      Ok(Rc::new(StdFileResourceInner::file(file)) as _)
+    }
+    .boxed_local()
   }
 
   fn mkdir_sync(
@@ -340,7 +350,9 @@ impl FileSystem for RealFs {
     access_check: Option<AccessCheckCb>,
     data: &[u8],
   ) -> FsResult<()> {
-    let mut file = open_with_access_check(options, path, access_check)?;
+    let (path, opts) =
+      open_options_with_access_check(options, path, access_check)?;
+    let mut file = opts.open(path)?;
     #[cfg(unix)]
     if let Some(mode) = options.mode {
       use std::os::unix::fs::PermissionsExt;
@@ -350,24 +362,30 @@ impl FileSystem for RealFs {
     Ok(())
   }
 
-  async fn write_file_async<'a>(
-    &'a self,
+  fn write_file_async(
+    &self,
     path: PathBuf,
     options: OpenOptions,
-    access_check: Option<AccessCheckCb<'a>>,
+    access_check: Option<AccessCheckCb>,
     data: Vec<u8>,
-  ) -> FsResult<()> {
-    let mut file = open_with_access_check(options, &path, access_check)?;
-    spawn_blocking(move || {
-      #[cfg(unix)]
-      if let Some(mode) = options.mode {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(mode))?;
-      }
-      file.write_all(&data)?;
-      Ok(())
-    })
-    .await?
+  ) -> LocalBoxFuture<'static, FsResult<()>> {
+    let path_and_opts_result =
+      open_options_with_access_check(options, &path, access_check);
+    async move {
+      let (path, opts) = path_and_opts_result?;
+      spawn_blocking(move || {
+        let mut file = opts.open(path)?;
+        #[cfg(unix)]
+        if let Some(mode) = options.mode {
+          use std::os::unix::fs::PermissionsExt;
+          file.set_permissions(fs::Permissions::from_mode(mode))?;
+        }
+        file.write_all(&data)?;
+        Ok(())
+      })
+      .await?
+    }
+    .boxed_local()
   }
 
   fn read_file_sync(
@@ -375,37 +393,31 @@ impl FileSystem for RealFs {
     path: &Path,
     access_check: Option<AccessCheckCb>,
   ) -> FsResult<Cow<'static, [u8]>> {
-    let mut file = open_with_access_check(
-      OpenOptions {
-        read: true,
-        ..Default::default()
-      },
-      path,
-      access_check,
-    )?;
+    let (path, opts) =
+      open_options_with_access_check(OpenOptions::read(), path, access_check)?;
+    let mut file = opts.open(path)?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
     Ok(Cow::Owned(buf))
   }
-  async fn read_file_async<'a>(
-    &'a self,
+  fn read_file_async(
+    &self,
     path: PathBuf,
-    access_check: Option<AccessCheckCb<'a>>,
-  ) -> FsResult<Cow<'static, [u8]>> {
-    let mut file = open_with_access_check(
-      OpenOptions {
-        read: true,
-        ..Default::default()
-      },
-      &path,
-      access_check,
-    )?;
-    spawn_blocking(move || {
-      let mut buf = Vec::new();
-      file.read_to_end(&mut buf)?;
-      Ok::<_, FsError>(Cow::Owned(buf))
-    })
-    .await?
+    access_check: Option<AccessCheckCb>,
+  ) -> LocalBoxFuture<'static, FsResult<Cow<'static, [u8]>>> {
+    let path_and_opts_result =
+      open_options_with_access_check(OpenOptions::read(), &path, access_check);
+    async move {
+      let (path, opts) = path_and_opts_result?;
+      spawn_blocking(move || {
+        let mut file = opts.open(path)?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        Ok::<_, FsError>(Cow::Owned(buf))
+      })
+      .await?
+    }
+    .boxed_local()
   }
 }
 
@@ -1061,17 +1073,6 @@ fn open_options(options: OpenOptions) -> fs::OpenOptions {
   open_options.append(options.append);
   open_options.create_new(options.create_new);
   open_options
-}
-
-#[inline(always)]
-pub fn open_with_access_check(
-  options: OpenOptions,
-  path: &Path,
-  access_check: Option<AccessCheckCb>,
-) -> FsResult<std::fs::File> {
-  let (path, opts) =
-    open_options_with_access_check(options, path, access_check)?;
-  Ok(opts.open(path)?)
 }
 
 #[inline(always)]
