@@ -258,7 +258,7 @@ pub trait FetchHandler: dyn_clone::DynClone {
   // optional cancel handle.
   fn fetch_file(
     &self,
-    state: &mut OpState,
+    state: Rc<RefCell<OpState>>,
     url: &Url,
   ) -> (CancelableResponseFuture, Option<Rc<CancelHandle>>);
 }
@@ -272,7 +272,7 @@ pub struct DefaultFileFetchHandler;
 impl FetchHandler for DefaultFileFetchHandler {
   fn fetch_file(
     &self,
-    _state: &mut OpState,
+    _state: Rc<RefCell<OpState>>,
     _url: &Url,
   ) -> (CancelableResponseFuture, Option<Rc<CancelHandle>>) {
     let fut = async move { Ok(Err(FetchError::NetworkError)) };
@@ -509,7 +509,7 @@ impl FetchPermissions for deno_permissions::PermissionsContainer {
 #[serde]
 #[allow(clippy::too_many_arguments)]
 pub fn op_fetch<FP>(
-  state: &mut OpState,
+  state: Rc<RefCell<OpState>>,
   #[serde] method: ByteString,
   #[string] url: String,
   #[serde] headers: Vec<(ByteString, ByteString)>,
@@ -521,11 +521,14 @@ pub fn op_fetch<FP>(
 where
   FP: FetchPermissions + 'static,
 {
-  let (client, allow_host) = if let Some(rid) = client_rid {
-    let r = state.resource_table.get::<HttpClientResource>(rid)?;
-    (r.client.clone(), r.allow_host)
-  } else {
-    (get_or_create_client_from_state(state)?, false)
+  let (client, allow_host) = {
+    let mut state = state.borrow_mut();
+    if let Some(rid) = client_rid {
+      let r = state.resource_table.get::<HttpClientResource>(rid)?;
+      (r.client.clone(), r.allow_host)
+    } else {
+      (get_or_create_client_from_state(&mut state)?, false)
+    }
   };
 
   let method = Method::from_bytes(&method)?;
@@ -538,12 +541,14 @@ where
       if method != Method::GET {
         return Err(FetchError::FsNotGet(method));
       }
-      let Options {
-        file_fetch_handler, ..
-      } = state.borrow_mut::<Options>();
-      let file_fetch_handler = file_fetch_handler.clone();
+      let file_fetch_handler = state
+        .borrow()
+        .borrow::<Options>()
+        .file_fetch_handler
+        .clone();
       let (future, maybe_cancel_handle) =
-        file_fetch_handler.fetch_file(state, &url);
+        file_fetch_handler.fetch_file(state.clone(), &url);
+      let mut state = state.borrow_mut();
       let request_rid = state
         .resource_table
         .add(FetchRequestResource { future, url });
@@ -553,6 +558,7 @@ where
       (request_rid, maybe_cancel_handle_rid)
     }
     "http" | "https" => {
+      let mut state = state.borrow_mut();
       let permissions = state.borrow_mut::<FP>();
       permissions.check_net_url(&url, "fetch()")?;
 
@@ -666,10 +672,11 @@ where
 
       let fut = async move { Ok(Ok(response)) };
 
-      let request_rid = state.resource_table.add(FetchRequestResource {
-        future: Box::pin(fut),
-        url,
-      });
+      let request_rid =
+        state.borrow_mut().resource_table.add(FetchRequestResource {
+          future: Box::pin(fut),
+          url,
+        });
 
       (request_rid, None)
     }
