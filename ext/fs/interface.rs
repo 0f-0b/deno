@@ -6,6 +6,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use deno_core::futures::FutureExt;
+use deno_core::futures::future::LocalBoxFuture;
 use deno_io::fs::File;
 use deno_io::fs::FsResult;
 use deno_io::fs::FsStat;
@@ -119,12 +121,12 @@ pub trait FileSystem: std::fmt::Debug + MaybeSend + MaybeSync {
     options: OpenOptions,
     access_check: Option<AccessCheckCb>,
   ) -> FsResult<Rc<dyn File>>;
-  async fn open_async<'a>(
-    &'a self,
+  fn open_async(
+    &self,
     path: PathBuf,
     options: OpenOptions,
-    access_check: Option<AccessCheckCb<'a>>,
-  ) -> FsResult<Rc<dyn File>>;
+    access_check: Option<AccessCheckCb>,
+  ) -> LocalBoxFuture<'static, FsResult<Rc<dyn File>>>;
 
   fn mkdir_sync(
     &self,
@@ -277,19 +279,23 @@ pub trait FileSystem: std::fmt::Debug + MaybeSend + MaybeSync {
     file.write_all_sync(data)?;
     Ok(())
   }
-  async fn write_file_async<'a>(
-    &'a self,
+  fn write_file_async(
+    &self,
     path: PathBuf,
     options: OpenOptions,
-    access_check: Option<AccessCheckCb<'a>>,
+    access_check: Option<AccessCheckCb>,
     data: Vec<u8>,
-  ) -> FsResult<()> {
-    let file = self.open_async(path, options, access_check).await?;
-    if let Some(mode) = options.mode {
-      file.clone().chmod_async(mode).await?;
+  ) -> LocalBoxFuture<'static, FsResult<()>> {
+    let file = self.open_async(path, options, access_check);
+    async move {
+      let file = file.await?;
+      if let Some(mode) = options.mode {
+        file.clone().chmod_async(mode).await?;
+      }
+      file.write_all(data.into()).await?;
+      Ok(())
     }
-    file.write_all(data.into()).await?;
-    Ok(())
+    .boxed_local()
   }
 
   fn read_file_sync(
@@ -302,15 +308,19 @@ pub trait FileSystem: std::fmt::Debug + MaybeSend + MaybeSync {
     let buf = file.read_all_sync()?;
     Ok(buf)
   }
-  async fn read_file_async<'a>(
-    &'a self,
+  fn read_file_async(
+    &self,
     path: PathBuf,
-    access_check: Option<AccessCheckCb<'a>>,
-  ) -> FsResult<Cow<'static, [u8]>> {
+    access_check: Option<AccessCheckCb>,
+  ) -> LocalBoxFuture<'static, FsResult<Cow<'static, [u8]>>> {
     let options = OpenOptions::read();
-    let file = self.open_async(path, options, access_check).await?;
-    let buf = file.read_all_async().await?;
-    Ok(buf)
+    let file = self.open_async(path, options, access_check);
+    async move {
+      let file = file.await?;
+      let buf = file.read_all_async().await?;
+      Ok(buf)
+    }
+    .boxed_local()
   }
 
   fn is_file_sync(&self, path: &Path) -> bool {
@@ -339,13 +349,17 @@ pub trait FileSystem: std::fmt::Debug + MaybeSend + MaybeSync {
     let buf = self.read_file_sync(path, access_check)?;
     Ok(string_from_cow_utf8_lossy(buf))
   }
-  async fn read_text_file_lossy_async<'a>(
-    &'a self,
+  fn read_text_file_lossy_async(
+    &self,
     path: PathBuf,
-    access_check: Option<AccessCheckCb<'a>>,
-  ) -> FsResult<Cow<'static, str>> {
-    let buf = self.read_file_async(path, access_check).await?;
-    Ok(string_from_cow_utf8_lossy(buf))
+    access_check: Option<AccessCheckCb>,
+  ) -> LocalBoxFuture<'static, FsResult<Cow<'static, str>>> {
+    let buf = self.read_file_async(path, access_check);
+    async move {
+      let buf = buf.await?;
+      Ok(string_from_cow_utf8_lossy(buf))
+    }
+    .boxed_local()
   }
 }
 

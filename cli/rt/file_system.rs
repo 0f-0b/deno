@@ -18,6 +18,8 @@ use std::time::SystemTime;
 use deno_core::BufMutView;
 use deno_core::BufView;
 use deno_core::ResourceHandleFd;
+use deno_core::futures::FutureExt;
+use deno_core::futures::future::LocalBoxFuture;
 use deno_lib::standalone::virtual_fs::FileSystemCaseSensitivity;
 use deno_lib::standalone::virtual_fs::OffsetWithLength;
 use deno_lib::standalone::virtual_fs::VfsEntry;
@@ -135,16 +137,17 @@ impl FileSystem for DenoRtSys {
       RealFs.open_sync(path, options, access_check)
     }
   }
-  async fn open_async<'a>(
-    &'a self,
+  fn open_async(
+    &self,
     path: PathBuf,
     options: OpenOptions,
-    access_check: Option<AccessCheckCb<'a>>,
-  ) -> FsResult<Rc<dyn DenoFile>> {
+    access_check: Option<AccessCheckCb>,
+  ) -> LocalBoxFuture<'static, FsResult<Rc<dyn DenoFile>>> {
     if self.0.is_path_within(&path) {
-      Ok(Rc::new(self.0.open_file(&path)?))
+      let result = self.0.open_file(&path);
+      async move { Ok(Rc::new(result?) as _) }.boxed_local()
     } else {
-      RealFs.open_async(path, options, access_check).await
+      RealFs.open_async(path, options, access_check)
     }
   }
 

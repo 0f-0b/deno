@@ -126,17 +126,6 @@ fn sync_permission_check<'a, P: FsPermissions + 'static>(
   }
 }
 
-fn async_permission_check<P: FsPermissions + 'static>(
-  state: Rc<RefCell<OpState>>,
-  api_name: &'static str,
-) -> impl AccessCheckFn + 'static {
-  move |path, options, resolve| {
-    let mut state = state.borrow_mut();
-    let permissions = state.borrow_mut::<P>();
-    permissions.check(options, path, api_name, resolve)
-  }
-}
-
 fn map_permission_error(
   operation: &'static str,
   error: FsError,
@@ -244,11 +233,16 @@ where
   let path = PathBuf::from(path);
 
   let options = options.unwrap_or_else(OpenOptions::read);
-  let mut access_check =
-    async_permission_check::<P>(state.clone(), "Deno.open()");
-  let fs = state.borrow().borrow::<FileSystemRc>().clone();
-  let file = fs
-    .open_async(path.clone(), options, Some(&mut access_check))
+
+  let fut = {
+    let mut state = state.borrow_mut();
+    let fs = state.borrow::<FileSystemRc>().clone();
+    let mut access_check =
+      sync_permission_check::<P>(state.borrow_mut(), "Deno.open()");
+    fs.open_async(path.clone(), options, Some(&mut access_check))
+  };
+
+  let file = fut
     .await
     .map_err(|error| map_permission_error("open", error, &path))?;
 
@@ -1346,21 +1340,21 @@ where
 
   let options = OpenOptions::write(create, append, create_new, mode);
 
-  let mut access_check =
-    async_permission_check::<P>(state.clone(), "Deno.writeFile()");
-  let (fs, cancel_handle) = {
-    let state = state.borrow_mut();
+  let (fut, cancel_handle) = {
+    let mut state = state.borrow_mut();
     let cancel_handle = cancel_rid
       .and_then(|rid| state.resource_table.get::<CancelHandle>(rid).ok());
-    (state.borrow::<FileSystemRc>().clone(), cancel_handle)
+    let fs = state.borrow::<FileSystemRc>().clone();
+    let mut access_check =
+      sync_permission_check::<P>(state.borrow_mut(), "Deno.writeFile()");
+    let fut = fs.write_file_async(
+      path.clone(),
+      options,
+      Some(&mut access_check),
+      data.to_vec(),
+    );
+    (fut, cancel_handle)
   };
-
-  let fut = fs.write_file_async(
-    path.clone(),
-    options,
-    Some(&mut access_check),
-    data.to_vec(),
-  );
 
   if let Some(cancel_handle) = cancel_handle {
     let res = fut.or_cancel(cancel_handle).await;
@@ -1415,16 +1409,16 @@ where
 {
   let path = PathBuf::from(path);
 
-  let mut access_check =
-    async_permission_check::<P>(state.clone(), "Deno.readFile()");
-  let (fs, cancel_handle) = {
-    let state = state.borrow();
+  let (fut, cancel_handle) = {
+    let mut state = state.borrow_mut();
     let cancel_handle = cancel_rid
       .and_then(|rid| state.resource_table.get::<CancelHandle>(rid).ok());
-    (state.borrow::<FileSystemRc>().clone(), cancel_handle)
+    let fs = state.borrow::<FileSystemRc>().clone();
+    let mut access_check =
+      sync_permission_check::<P>(state.borrow_mut(), "Deno.readFile()");
+    let fut = fs.read_file_async(path.clone(), Some(&mut access_check));
+    (fut, cancel_handle)
   };
-
-  let fut = fs.read_file_async(path.clone(), Some(&mut access_check));
 
   let buf = if let Some(cancel_handle) = cancel_handle {
     let res = fut.or_cancel(cancel_handle).await;
@@ -1481,17 +1475,17 @@ where
 {
   let path = PathBuf::from(path);
 
-  let mut access_check =
-    async_permission_check::<P>(state.clone(), "Deno.readFile()");
-  let (fs, cancel_handle) = {
-    let state = state.borrow_mut();
+  let (fut, cancel_handle) = {
+    let mut state = state.borrow_mut();
     let cancel_handle = cancel_rid
       .and_then(|rid| state.resource_table.get::<CancelHandle>(rid).ok());
-    (state.borrow::<FileSystemRc>().clone(), cancel_handle)
+    let fs = state.borrow::<FileSystemRc>().clone();
+    let mut access_check =
+      sync_permission_check::<P>(state.borrow_mut(), "Deno.readFile()");
+    let fut =
+      fs.read_text_file_lossy_async(path.clone(), Some(&mut access_check));
+    (fut, cancel_handle)
   };
-
-  let fut =
-    fs.read_text_file_lossy_async(path.clone(), Some(&mut access_check));
 
   let str = if let Some(cancel_handle) = cancel_handle {
     let res = fut.or_cancel(cancel_handle).await;
