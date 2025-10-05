@@ -257,7 +257,6 @@ fn pretty_resource_name(
     "udpSocket" => ("A UDP socket", "opened", "closed"),
     "timer" => ("A timer", "started", "fired/cleared"),
     "textDecoder" => ("A text decoder", "created", "finished"),
-    "messagePort" => ("A message port", "created", "closed"),
     "webSocketStream" => ("A WebSocket", "opened", "closed"),
     "fsEvents" => ("A file system watcher", "created", "closed"),
     "childStdin" => ("A child process stdin", "opened", "closed"),
@@ -314,7 +313,6 @@ fn resource_close_hint(name: &str) -> &'static str {
     "textDecoder" => {
       "Close the text decoder by calling `textDecoder.decode('')` or `await textDecoderStream.readable.cancel()`."
     }
-    "messagePort" => "Close the message port by calling `messagePort.close()`.",
     "webSocketStream" => "Close the WebSocket by calling `webSocket.close()`.",
     "fsEvents" => "Close the file system watcher by calling `watcher.close()`.",
     "childStdin" => {
@@ -393,7 +391,7 @@ pub const OP_DETAILS: phf::Map<&'static str, [&'static str; 2]> = phf_map! {
   "op_http_upgrade_websocket" => ["upgrade a HTTP connection to a WebSocket", "awaiting `Deno.HttpEvent#respondWith`"],
   "op_http_write" => ["write HTTP response body", "awaiting `Deno.HttpEvent#respondWith`"],
   "op_http_write_headers" => ["write HTTP response headers", "awaiting `Deno.HttpEvent#respondWith`"],
-  "op_message_port_recv_message" => ["receive a message from a MessagePort", "awaiting the result of not closing a `MessagePort`"],
+  "op_message_port_recv_message" => ["receive a message from a MessagePort", "closing a `MessagePort`"],
   "op_net_accept_tcp" => ["accept a TCP stream", "closing a `Deno.Listener`"],
   "op_net_accept_tls" => ["accept a TLS stream", "closing a `Deno.TlsListener`"],
   "op_net_accept_unix" => ["accept a Unix stream", "closing a `Deno.Listener`"],

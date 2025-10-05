@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use deno_core::CancelFuture;
 use deno_core::OpState;
+use deno_core::convert::OptionNull;
 use deno_core::op2;
-use deno_web::JsMessageData;
-use deno_web::MessagePortError;
+use deno_web::MessageData;
 pub use sync_fetch::SyncFetchError;
 
 use self::sync_fetch::op_worker_sync_fetch;
@@ -29,28 +29,19 @@ deno_core::extension!(
 );
 
 #[op2]
-fn op_worker_post_message(
-  state: &mut OpState,
-  #[serde] data: JsMessageData,
-) -> Result<(), MessagePortError> {
+fn op_worker_post_message(state: &mut OpState, #[from_v8] data: MessageData) {
   let handle = state.borrow::<WebWorkerInternalHandle>().clone();
-  handle.port.send(state, data)
+  handle.port.send(data)
 }
 
 #[op2(async(lazy), fast)]
-#[serde]
+#[to_v8]
 async fn op_worker_recv_message(
   state: Rc<RefCell<OpState>>,
-) -> Result<Option<JsMessageData>, MessagePortError> {
-  let handle = {
-    let state = state.borrow();
-    state.borrow::<WebWorkerInternalHandle>().clone()
-  };
-  handle
-    .port
-    .recv(state.clone())
-    .or_cancel(handle.cancel)
-    .await?
+) -> Result<OptionNull<MessageData>, deno_core::Canceled> {
+  let handle = state.borrow().borrow::<WebWorkerInternalHandle>().clone();
+  let data = handle.port.recv().or_cancel(handle.cancel).await?;
+  Ok(data.into())
 }
 
 #[op2(fast)]

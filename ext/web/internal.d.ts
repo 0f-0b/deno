@@ -99,21 +99,21 @@ declare module "ext:deno_web/06_streams.js" {
 }
 
 declare module "ext:deno_web/13_message_port.js" {
-  type Transferable = {
-    kind: "messagePort";
-    data: number;
-  } | {
-    kind: "arrayBuffer";
-    data: number;
-  };
+  type Transferable =
+    | { kind: "messagePort"; data: object }
+    | { kind: "arrayBuffer"; data: number };
   interface MessageData {
-    data: Uint8Array;
+    data: Uint8Array<ArrayBuffer>;
     transferables: Transferable[];
   }
-  const MessageChannel: typeof MessageChannel;
-  const MessagePort: typeof MessagePort;
-  const MessagePortIdSymbol: typeof MessagePortIdSymbol;
+  const MessageChannel: typeof globalThis.MessageChannel;
+  const MessagePort: typeof globalThis.MessagePort;
+  const MessagePortIdSymbol: unique symbol;
   function deserializeJsMessageData(
-    messageData: messagePort.MessageData,
-  ): [object, object[]];
+    data: MessageData,
+  ): { message: unknown; ports: MessagePort[] };
+  function serializeJsMessageData(
+    message: unknown,
+    transferables: object[],
+  ): MessageData;
 }

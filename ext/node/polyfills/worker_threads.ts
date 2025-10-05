@@ -17,7 +17,6 @@ import {
   MessagePort,
   MessagePortIdSymbol,
   MessagePortPrototype,
-  MessagePortReceiveMessageOnPortSymbol,
   nodeWorkerThreadCloseCb,
   refMessagePort,
   serializeJsMessageData,
@@ -32,6 +31,7 @@ import process from "node:process";
 import { createRequire } from "node:module";
 
 const {
+  ArrayPrototypeForEach,
   encodeURIComponent,
   Error,
   FunctionPrototypeCall,
@@ -256,11 +256,9 @@ class NodeWorker extends EventEmitter {
       if (this.#status === "TERMINATED" || data === null) {
         return;
       }
-      let message, _transferables;
+      let message;
       try {
-        const v = deserializeJsMessageData(data);
-        message = v[0];
-        _transferables = v[1];
+        ({ message } = deserializeJsMessageData(data));
       } catch (err) {
         this.emit("messageerror", err);
         return;
@@ -404,7 +402,7 @@ internals.__initWorkerThreads = (
     threadId = workerId;
     let isWorkerThread = false;
     if (maybeWorkerMetadata) {
-      const { 0: metadata, 1: _ } = maybeWorkerMetadata;
+      const { message: metadata } = maybeWorkerMetadata;
       workerData = metadata.workerData;
       environmentData = metadata.environmentData;
       isWorkerThread = metadata.isWorkerThread;
@@ -519,11 +517,10 @@ export function receiveMessageOnPort(port: MessagePort): object | undefined {
     err["code"] = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  port[MessagePortReceiveMessageOnPortSymbol] = true;
   const data = op_message_port_recv_message_sync(port[MessagePortIdSymbol]);
   if (data === null) return undefined;
-  const message = deserializeJsMessageData(data)[0];
-  patchMessagePortIfFound(message);
+  const { message, ports } = deserializeJsMessageData(data);
+  ArrayPrototypeForEach(ports, webMessagePortToNodeMessagePort);
   return { message };
 }
 

@@ -17,7 +17,6 @@ use deno_cache::CreateCache;
 use deno_cache::SqliteBackedCache;
 use deno_core::CancelHandle;
 use deno_core::CompiledWasmModuleStore;
-use deno_core::DetachedBuffer;
 use deno_core::Extension;
 use deno_core::JsRuntime;
 use deno_core::ModuleCodeString;
@@ -27,6 +26,7 @@ use deno_core::ModuleSpecifier;
 use deno_core::PollEventLoopOptions;
 use deno_core::RuntimeOptions;
 use deno_core::SharedArrayBufferStore;
+use deno_core::ToV8;
 use deno_core::error::CoreError;
 use deno_core::error::CoreErrorKind;
 use deno_core::futures::channel::mpsc;
@@ -52,11 +52,9 @@ use deno_terminal::colors;
 use deno_tls::RootCertStoreProvider;
 use deno_tls::TlsKeys;
 use deno_web::BlobStore;
-use deno_web::JsMessageData;
+use deno_web::MessageData;
 use deno_web::MessagePort;
-use deno_web::Transferable;
 use deno_web::create_entangled_message_port;
-use deno_web::serialize_transferables;
 use log::debug;
 use node_resolver::InNpmPackageChecker;
 use node_resolver::NpmPackageFolderResolver;
@@ -74,11 +72,6 @@ use crate::worker::MEMORY_TRIM_HANDLER_ENABLED;
 use crate::worker::SIGUSR2_RX;
 use crate::worker::create_op_metrics;
 use crate::worker::create_validate_import_attributes_callback;
-
-pub struct WorkerMetadata {
-  pub buffer: DetachedBuffer,
-  pub transferables: Vec<Transferable>,
-}
 
 static WORKER_ID_COUNTER: AtomicU32 = AtomicU32::new(1);
 
@@ -409,7 +402,7 @@ pub struct WebWorkerOptions {
   pub stdio: Stdio,
   pub trace_ops: Option<Vec<String>>,
   pub close_on_idle: bool,
-  pub maybe_worker_metadata: Option<WorkerMetadata>,
+  pub maybe_worker_metadata: Option<MessageData>,
   pub maybe_coverage_dir: Option<PathBuf>,
   pub enable_raw_imports: bool,
   pub enable_stack_trace_arg_in_ops: bool,
@@ -431,7 +424,7 @@ pub struct WebWorker {
   has_message_event_listener_fn: Option<v8::Global<v8::Value>>,
   bootstrap_fn_global: Option<v8::Global<v8::Function>>,
   // Consumed when `bootstrap_fn` is called
-  maybe_worker_metadata: Option<WorkerMetadata>,
+  maybe_worker_metadata: Option<MessageData>,
   memory_trim_handle: Option<tokio::task::JoinHandle<()>>,
   maybe_coverage_dir: Option<PathBuf>,
 }
@@ -758,16 +751,10 @@ impl WebWorker {
       let undefined = v8::undefined(scope);
       let mut worker_data: v8::Local<v8::Value> = v8::undefined(scope).into();
       if let Some(data) = self.maybe_worker_metadata.take() {
-        let js_transferables = serialize_transferables(
-          &mut op_state.borrow_mut(),
-          data.transferables,
-        );
-        let js_message_data = JsMessageData {
-          data: data.buffer,
-          transferables: js_transferables,
+        worker_data = match data.to_v8(scope) {
+          Ok(v) => v,
+          Err(e) => match e {},
         };
-        worker_data =
-          deno_core::serde_v8::to_v8(scope, js_message_data).unwrap();
       }
       let name_str: v8::Local<v8::Value> =
         v8::String::new(scope, &self.name).unwrap().into();

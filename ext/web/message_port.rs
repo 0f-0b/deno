@@ -1,42 +1,83 @@
 // Copyright 2018-2025 the Deno authors. MIT license.
 
-use std::borrow::Cow;
 use std::cell::RefCell;
+use std::convert::Infallible;
 use std::future::poll_fn;
 use std::rc::Rc;
+use std::task::Context;
+use std::task::Poll;
 
 use deno_core::CancelFuture;
 use deno_core::CancelHandle;
-use deno_core::DetachedBuffer;
-use deno_core::OpState;
-use deno_core::RcRef;
-use deno_core::Resource;
-use deno_core::ResourceId;
+use deno_core::FromV8;
+use deno_core::GarbageCollected;
+use deno_core::ToV8;
+use deno_core::convert::OptionNull;
 use deno_core::op2;
-use serde::Deserialize;
-use serde::Serialize;
+use deno_core::v8;
+use deno_error::JsError;
+use thiserror::Error;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::unbounded_channel;
 
-#[derive(Debug, thiserror::Error, deno_error::JsError)]
-pub enum MessagePortError {
-  #[class(type)]
-  #[error("Invalid message port transfer")]
-  InvalidTransfer,
-  #[class(type)]
-  #[error("Message port is not ready for transfer")]
-  NotReady,
-  #[class(type)]
-  #[error("Can not transfer self message port")]
-  TransferSelf,
-  #[class(inherit)]
+#[derive(Debug, Error, JsError)]
+#[class(type)]
+pub enum DetachedBufferFromV8Error {
+  #[error("ArrayBuffer is not detachable")]
+  NotDetachable,
   #[error(transparent)]
-  Canceled(#[from] deno_core::Canceled),
-  #[class(inherit)]
-  #[error(transparent)]
-  Resource(deno_core::error::ResourceError),
+  Data(#[from] v8::DataError),
+}
+
+pub struct DetachedBuffer {
+  backing_store: v8::SharedRef<v8::BackingStore>,
+  byte_offset: usize,
+  byte_length: usize,
+}
+
+impl<'a> FromV8<'a> for DetachedBuffer {
+  type Error = DetachedBufferFromV8Error;
+
+  fn from_v8(
+    scope: &mut v8::PinScope<'a, '_>,
+    value: v8::Local<'a, v8::Value>,
+  ) -> Result<Self, Self::Error> {
+    let data = value.cast::<v8::ArrayBufferView>();
+    let byte_offset = data.byte_offset();
+    let byte_length = data.byte_length();
+    let buffer = data.buffer(scope).unwrap();
+    let backing_store = buffer.get_backing_store();
+    let Some(true) = buffer.detach(None) else {
+      return Err(DetachedBufferFromV8Error::NotDetachable);
+    };
+    Ok(Self {
+      backing_store,
+      byte_offset,
+      byte_length,
+    })
+  }
+}
+
+impl<'a> ToV8<'a> for DetachedBuffer {
+  type Error = Infallible;
+
+  fn to_v8(
+    self,
+    scope: &mut v8::PinScope<'a, '_>,
+  ) -> Result<v8::Local<'a, v8::Value>, Self::Error> {
+    let Self {
+      backing_store,
+      byte_offset,
+      byte_length,
+    } = self;
+    let buffer = v8::ArrayBuffer::with_backing_store(scope, &backing_store);
+    let value = v8::Uint8Array::new(scope, buffer, byte_offset, byte_length)
+      .unwrap()
+      .into();
+    Ok(value)
+  }
 }
 
 pub enum Transferable {
@@ -44,52 +85,154 @@ pub enum Transferable {
   ArrayBuffer(u32),
 }
 
-type MessagePortMessage = (DetachedBuffer, Vec<Transferable>);
+pub struct MessageData {
+  data: DetachedBuffer,
+  transferables: Vec<Transferable>,
+}
+
+pub const DATA_STR: deno_core::FastStaticString = deno_core::ascii_str!("data");
+pub const KIND_STR: deno_core::FastStaticString = deno_core::ascii_str!("kind");
+pub const MESSAGE_PORT_STR: deno_core::FastStaticString =
+  deno_core::ascii_str!("messagePort");
+pub const ARRAY_BUFFER_STR: deno_core::FastStaticString =
+  deno_core::ascii_str!("arrayBuffer");
+pub const TRANSFERABLES_STR: deno_core::FastStaticString =
+  deno_core::ascii_str!("transferables");
+
+impl<'a> FromV8<'a> for MessageData {
+  type Error = Infallible;
+
+  fn from_v8(
+    scope: &mut v8::PinScope<'a, '_>,
+    value: v8::Local<'a, v8::Value>,
+  ) -> Result<Self, Self::Error> {
+    let data_str = DATA_STR.v8_string(scope).unwrap();
+    let kind_str = KIND_STR.v8_string(scope).unwrap();
+    let message_port_str = MESSAGE_PORT_STR.v8_string(scope).unwrap();
+    let array_buffer_str = ARRAY_BUFFER_STR.v8_string(scope).unwrap();
+    let transferables_str = TRANSFERABLES_STR.v8_string(scope).unwrap();
+    let value = value.cast::<v8::Object>();
+    let data = {
+      let data = value.get(scope, data_str.into()).unwrap();
+      DetachedBuffer::from_v8(scope, data).unwrap()
+    };
+    let transferables = {
+      let transferables = value
+        .get(scope, transferables_str.into())
+        .unwrap()
+        .cast::<v8::Array>();
+      let len = transferables.length();
+      let mut vec = Vec::with_capacity(len as usize);
+      for i in 0..len {
+        let elem = transferables
+          .get_index(scope, i)
+          .unwrap()
+          .cast::<v8::Object>();
+        let kind = elem.get(scope, kind_str.into()).unwrap();
+        let data = elem.get(scope, data_str.into()).unwrap();
+        if kind == message_port_str {
+          let handle = deno_core::cppgc::try_unwrap_cppgc_object::<
+            MessagePortHandle,
+          >(scope, data)
+          .unwrap();
+          handle.cancel.cancel();
+          let port = handle.port.take().unwrap();
+          vec.push(Transferable::MessagePort(port));
+        } else if kind == array_buffer_str {
+          let id = data.uint32_value(scope).unwrap();
+          vec.push(Transferable::ArrayBuffer(id));
+        } else {
+          unreachable!();
+        }
+      }
+      vec
+    };
+    Ok(Self {
+      data,
+      transferables,
+    })
+  }
+}
+
+impl<'a> ToV8<'a> for MessageData {
+  type Error = Infallible;
+
+  fn to_v8(
+    self,
+    scope: &mut v8::PinScope<'a, '_>,
+  ) -> Result<v8::Local<'a, v8::Value>, Self::Error> {
+    let data_str = DATA_STR.v8_string(scope).unwrap();
+    let kind_str = KIND_STR.v8_string(scope).unwrap();
+    let message_port_str = MESSAGE_PORT_STR.v8_string(scope).unwrap();
+    let array_buffer_str = ARRAY_BUFFER_STR.v8_string(scope).unwrap();
+    let transferables_str = TRANSFERABLES_STR.v8_string(scope).unwrap();
+    let null = v8::null(scope);
+    let data = self.data.to_v8(scope)?;
+    let transferables = {
+      let elems = self
+        .transferables
+        .into_iter()
+        .map(|transferable| match transferable {
+          Transferable::MessagePort(port) => {
+            let port = deno_core::cppgc::make_cppgc_object(
+              scope,
+              MessagePortHandle::new(port),
+            );
+            v8::Object::with_prototype_and_properties(
+              scope,
+              null.into(),
+              &[kind_str.into(), data_str.into()],
+              &[message_port_str.into(), port.into()],
+            )
+            .into()
+          }
+          Transferable::ArrayBuffer(id) => {
+            let id = v8::Integer::new_from_unsigned(scope, id);
+            v8::Object::with_prototype_and_properties(
+              scope,
+              null.into(),
+              &[kind_str.into(), data_str.into()],
+              &[array_buffer_str.into(), id.into()],
+            )
+            .into()
+          }
+        })
+        .collect::<Vec<_>>();
+      v8::Array::new_with_elements(scope, &elems).into()
+    };
+    Ok(
+      v8::Object::with_prototype_and_properties(
+        scope,
+        null.into(),
+        &[data_str.into(), transferables_str.into()],
+        &[data, transferables],
+      )
+      .into(),
+    )
+  }
+}
 
 pub struct MessagePort {
-  rx: RefCell<UnboundedReceiver<MessagePortMessage>>,
-  tx: RefCell<Option<UnboundedSender<MessagePortMessage>>>,
+  rx: RefCell<UnboundedReceiver<MessageData>>,
+  tx: RefCell<Option<UnboundedSender<MessageData>>>,
 }
 
 impl MessagePort {
-  pub fn send(
-    &self,
-    state: &mut OpState,
-    data: JsMessageData,
-  ) -> Result<(), MessagePortError> {
-    let transferables =
-      deserialize_js_transferables(state, data.transferables)?;
-
+  pub fn send(&self, data: MessageData) {
     // Swallow the failed to send error. It means the channel was disentangled,
     // but not cleaned up.
     if let Some(tx) = &*self.tx.borrow() {
-      tx.send((data.data, transferables)).ok();
+      let _ = tx.send(data);
     }
-
-    Ok(())
   }
 
-  pub async fn recv(
-    &self,
-    state: Rc<RefCell<OpState>>,
-  ) -> Result<Option<JsMessageData>, MessagePortError> {
-    let rx = &self.rx;
+  pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<MessageData>> {
+    let mut rx = self.rx.borrow_mut();
+    rx.poll_recv(cx)
+  }
 
-    let maybe_data = poll_fn(|cx| {
-      let mut rx = rx.borrow_mut();
-      rx.poll_recv(cx)
-    })
-    .await;
-
-    if let Some((data, transferables)) = maybe_data {
-      let js_transferables =
-        serialize_transferables(&mut state.borrow_mut(), transferables);
-      return Ok(Some(JsMessageData {
-        data,
-        transferables: js_transferables,
-      }));
-    }
-    Ok(None)
+  pub async fn recv(&self) -> Option<MessageData> {
+    poll_fn(|cx| self.poll_recv(cx)).await
   }
 
   /// This forcefully disconnects the message port from its paired port. This
@@ -101,8 +244,8 @@ impl MessagePort {
 }
 
 pub fn create_entangled_message_port() -> (MessagePort, MessagePort) {
-  let (port1_tx, port2_rx) = unbounded_channel::<MessagePortMessage>();
-  let (port2_tx, port1_rx) = unbounded_channel::<MessagePortMessage>();
+  let (port1_tx, port2_rx) = unbounded_channel();
+  let (port2_tx, port1_rx) = unbounded_channel();
 
   let port1 = MessagePort {
     rx: RefCell::new(port1_rx),
@@ -117,158 +260,82 @@ pub fn create_entangled_message_port() -> (MessagePort, MessagePort) {
   (port1, port2)
 }
 
-pub struct MessagePortResource {
-  port: MessagePort,
-  cancel: CancelHandle,
+pub struct MessagePortHandle {
+  port: RefCell<Option<MessagePort>>,
+  cancel: Rc<CancelHandle>,
 }
 
-impl Resource for MessagePortResource {
-  fn name(&self) -> Cow<'_, str> {
-    "messagePort".into()
+impl MessagePortHandle {
+  fn new(port: MessagePort) -> Self {
+    Self {
+      port: RefCell::new(Some(port)),
+      cancel: Rc::new(CancelHandle::new()),
+    }
   }
+}
 
-  fn close(self: Rc<Self>) {
-    self.cancel.cancel();
+// SAFETY: this type has no members.
+unsafe impl GarbageCollected for MessagePortHandle {
+  fn trace(&self, _visitor: &mut v8::cppgc::Visitor) {}
+
+  fn get_name(&self) -> &'static std::ffi::CStr {
+    c"MessagePortHandle"
   }
 }
 
 #[op2]
-#[serde]
-pub fn op_message_port_create_entangled(
-  state: &mut OpState,
-) -> (ResourceId, ResourceId) {
+pub fn op_message_port_create_entangled<'a>(
+  scope: &mut v8::PinScope<'a, '_>,
+) -> v8::Local<'a, v8::Array> {
   let (port1, port2) = create_entangled_message_port();
-
-  let port1_id = state.resource_table.add(MessagePortResource {
-    port: port1,
-    cancel: CancelHandle::new(),
-  });
-
-  let port2_id = state.resource_table.add(MessagePortResource {
-    port: port2,
-    cancel: CancelHandle::new(),
-  });
-
-  (port1_id, port2_id)
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum JsTransferable {
-  #[serde(rename_all = "camelCase")]
-  MessagePort(ResourceId),
-  ArrayBuffer(u32),
-}
-
-pub fn deserialize_js_transferables(
-  state: &mut OpState,
-  js_transferables: Vec<JsTransferable>,
-) -> Result<Vec<Transferable>, MessagePortError> {
-  let mut transferables = Vec::with_capacity(js_transferables.len());
-  for js_transferable in js_transferables {
-    match js_transferable {
-      JsTransferable::MessagePort(id) => {
-        let resource = state
-          .resource_table
-          .take::<MessagePortResource>(id)
-          .map_err(|_| MessagePortError::InvalidTransfer)?;
-        resource.cancel.cancel();
-        let resource =
-          Rc::try_unwrap(resource).map_err(|_| MessagePortError::NotReady)?;
-        transferables.push(Transferable::MessagePort(resource.port));
-      }
-      JsTransferable::ArrayBuffer(id) => {
-        transferables.push(Transferable::ArrayBuffer(id));
-      }
-    }
-  }
-  Ok(transferables)
-}
-
-pub fn serialize_transferables(
-  state: &mut OpState,
-  transferables: Vec<Transferable>,
-) -> Vec<JsTransferable> {
-  let mut js_transferables = Vec::with_capacity(transferables.len());
-  for transferable in transferables {
-    match transferable {
-      Transferable::MessagePort(port) => {
-        let rid = state.resource_table.add(MessagePortResource {
-          port,
-          cancel: CancelHandle::new(),
-        });
-        js_transferables.push(JsTransferable::MessagePort(rid));
-      }
-      Transferable::ArrayBuffer(id) => {
-        js_transferables.push(JsTransferable::ArrayBuffer(id));
-      }
-    }
-  }
-  js_transferables
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct JsMessageData {
-  pub data: DetachedBuffer,
-  pub transferables: Vec<JsTransferable>,
+  let port1 =
+    deno_core::cppgc::make_cppgc_object(scope, MessagePortHandle::new(port1));
+  let port2 =
+    deno_core::cppgc::make_cppgc_object(scope, MessagePortHandle::new(port2));
+  v8::Array::new_with_elements(scope, &[port1.into(), port2.into()])
 }
 
 #[op2]
 pub fn op_message_port_post_message(
-  state: &mut OpState,
-  #[smi] rid: ResourceId,
-  #[serde] data: JsMessageData,
-) -> Result<(), MessagePortError> {
-  for js_transferable in &data.transferables {
-    if let JsTransferable::MessagePort(id) = js_transferable
-      && *id == rid
-    {
-      return Err(MessagePortError::TransferSelf);
-    }
-  }
-
-  let resource = state
-    .resource_table
-    .get::<MessagePortResource>(rid)
-    .map_err(MessagePortError::Resource)?;
-  resource.port.send(state, data)
+  #[cppgc] handle: &MessagePortHandle,
+  #[from_v8] data: MessageData,
+) {
+  let port = handle.port.borrow();
+  let port = port.as_ref().unwrap();
+  port.send(data)
 }
 
 #[op2(async)]
-#[serde]
+#[to_v8]
 pub async fn op_message_port_recv_message(
-  state: Rc<RefCell<OpState>>,
-  #[smi] rid: ResourceId,
-) -> Result<Option<JsMessageData>, MessagePortError> {
-  let resource = {
-    let state = state.borrow();
-    match state.resource_table.get::<MessagePortResource>(rid) {
-      Ok(resource) => resource,
-      Err(_) => return Ok(None),
-    }
-  };
-  let cancel = RcRef::map(resource.clone(), |r| &r.cancel);
-  resource.port.recv(state).or_cancel(cancel).await?
+  #[cppgc] handle: &MessagePortHandle,
+) -> Result<OptionNull<MessageData>, deno_core::Canceled> {
+  let data = poll_fn(|cx| {
+    let port = handle.port.borrow();
+    let port = port.as_ref().unwrap();
+    port.poll_recv(cx)
+  })
+  .or_cancel(handle.cancel.clone())
+  .await?;
+  Ok(data.into())
 }
 
 #[op2]
-#[serde]
+#[to_v8]
 pub fn op_message_port_recv_message_sync(
-  state: &mut OpState, // Rc<RefCell<OpState>>,
-  #[smi] rid: ResourceId,
-) -> Result<Option<JsMessageData>, MessagePortError> {
-  let resource = state
-    .resource_table
-    .get::<MessagePortResource>(rid)
-    .map_err(MessagePortError::Resource)?;
-  let mut rx = resource.port.rx.borrow_mut();
+  #[cppgc] handle: &MessagePortHandle,
+) -> OptionNull<MessageData> {
+  let port = handle.port.borrow();
+  let port = port.as_ref().unwrap();
+  let mut rx = port.rx.borrow_mut();
+  let data = match rx.try_recv() {
+    Ok(data) => Some(data),
+    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
+  };
+  data.into()
+}
 
-  match rx.try_recv() {
-    Ok((d, t)) => Ok(Some(JsMessageData {
-      data: d,
-      transferables: serialize_transferables(state, t),
-    })),
-    Err(TryRecvError::Empty) => Ok(None),
-    Err(TryRecvError::Disconnected) => Ok(None),
-  }
+#[op2(fast)]
+pub fn op_message_port_close(#[cppgc] handle: &MessagePortHandle) {
+  handle.cancel.cancel();
 }

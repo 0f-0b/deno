@@ -9,13 +9,12 @@ use deno_core::CancelFuture;
 use deno_core::CancelHandle;
 use deno_core::ModuleSpecifier;
 use deno_core::OpState;
+use deno_core::convert::OptionNull;
 use deno_core::op2;
 use deno_core::serde::Deserialize;
 use deno_permissions::ChildPermissionsArg;
 use deno_permissions::PermissionsContainer;
-use deno_web::JsMessageData;
-use deno_web::MessagePortError;
-use deno_web::deserialize_js_transferables;
+use deno_web::MessageData;
 use log::debug;
 
 use crate::ops::TestingFeaturesEnabled;
@@ -25,7 +24,6 @@ use crate::web_worker::WebWorker;
 use crate::web_worker::WebWorkerHandle;
 use crate::web_worker::WorkerControlEvent;
 use crate::web_worker::WorkerId;
-use crate::web_worker::WorkerMetadata;
 use crate::web_worker::WorkerThreadType;
 use crate::web_worker::run_web_worker;
 use crate::worker::FormatJsErrorFn;
@@ -40,7 +38,7 @@ pub struct CreateWebWorkerArgs {
   pub main_module: ModuleSpecifier,
   pub worker_type: WorkerThreadType,
   pub close_on_idle: bool,
-  pub maybe_worker_metadata: Option<WorkerMetadata>,
+  pub maybe_worker_metadata: Option<MessageData>,
 }
 
 pub type CreateWebWorkerCb = dyn Fn(CreateWebWorkerArgs) -> (WebWorker, SendableWebWorkerHandle)
@@ -133,9 +131,6 @@ pub enum CreateWorkerError {
   #[error(transparent)]
   ModuleResolution(#[from] deno_core::ModuleResolutionError),
   #[class(inherit)]
-  #[error(transparent)]
-  MessagePort(#[from] MessagePortError),
-  #[class(inherit)]
   #[error("{0}")]
   Io(#[from] std::io::Error),
 }
@@ -146,7 +141,7 @@ pub enum CreateWorkerError {
 fn op_create_worker(
   state: &mut OpState,
   #[serde] args: CreateWorkerArgs,
-  #[serde] maybe_worker_metadata: Option<JsMessageData>,
+  #[from_v8] maybe_worker_metadata: OptionNull<MessageData>,
 ) -> Result<WorkerId, CreateWorkerError> {
   let specifier = args.specifier.clone();
   let maybe_source_code = if args.has_source_code {
@@ -192,16 +187,7 @@ fn op_create_worker(
 
   // Setup new thread
   let thread_builder = std::thread::Builder::new().name(format!("{worker_id}"));
-  let maybe_worker_metadata = if let Some(data) = maybe_worker_metadata {
-    let transferables =
-      deserialize_js_transferables(state, data.transferables)?;
-    Some(WorkerMetadata {
-      buffer: data.data,
-      transferables,
-    })
-  } else {
-    None
-  };
+  let maybe_worker_metadata = maybe_worker_metadata.into();
   // Spawn it
   thread_builder.spawn(move || {
     // Any error inside this block is terminal:
@@ -356,11 +342,11 @@ async fn op_host_recv_ctrl(
 }
 
 #[op2(async)]
-#[serde]
+#[to_v8]
 async fn op_host_recv_message(
   state: Rc<RefCell<OpState>>,
   #[serde] id: WorkerId,
-) -> Result<Option<JsMessageData>, MessagePortError> {
+) -> OptionNull<MessageData> {
   let (worker_handle, cancel_handle) = {
     let s = state.borrow();
     let workers_table = s.borrow::<WorkersTable>();
@@ -369,28 +355,20 @@ async fn op_host_recv_message(
       (handle.worker_handle.clone(), handle.cancel_handle.clone())
     } else {
       // If handle was not found it means worker has already shutdown
-      return Ok(None);
+      return None.into();
     }
   };
 
   let ret = worker_handle
     .port
-    .recv(state.clone())
+    .recv()
     .or_cancel(cancel_handle)
-    .await;
-  match ret {
-    Ok(Ok(ret)) => {
-      if ret.is_none() {
-        close_channel(state, id, WorkerChannel::Messages);
-      }
-      Ok(ret)
-    }
-    Ok(Err(err)) => Err(err),
-    Err(_) => {
-      // The worker was terminated.
-      Ok(None)
-    }
+    .await
+    .unwrap_or(None);
+  if ret.is_none() {
+    close_channel(state, id, WorkerChannel::Messages);
   }
+  ret.into()
 }
 
 /// Post message to guest worker as host
@@ -398,14 +376,13 @@ async fn op_host_recv_message(
 fn op_host_post_message(
   state: &mut OpState,
   #[serde] id: WorkerId,
-  #[serde] data: JsMessageData,
-) -> Result<(), MessagePortError> {
+  #[from_v8] data: MessageData,
+) {
   if let Some(worker_thread) = state.borrow::<WorkersTable>().get(&id) {
     debug!("post message to worker {}", id);
     let worker_handle = worker_thread.worker_handle.clone();
-    worker_handle.port.send(state, data)?;
+    worker_handle.port.send(data);
   } else {
     debug!("tried to post message to non-existent worker {}", id);
   }
-  Ok(())
 }

@@ -8,19 +8,18 @@
 
 import { core, primordials } from "ext:core/mod.js";
 import {
+  op_message_port_close,
   op_message_port_create_entangled,
   op_message_port_post_message,
   op_message_port_recv_message,
 } from "ext:core/ops";
 const {
-  ArrayBufferPrototypeGetByteLength,
-  ArrayPrototypeFilter,
+  ArrayBufferPrototypeGetDetached,
   ArrayPrototypeIncludes,
   ArrayPrototypePush,
   ObjectPrototypeIsPrototypeOf,
   ObjectDefineProperty,
   Symbol,
-  PromiseResolve,
   SafeArrayIterator,
   SymbolFor,
   SymbolIterator,
@@ -40,7 +39,6 @@ import {
   setEventTargetData,
   setIsTrusted,
 } from "./02_event.js";
-import { isDetachedBuffer } from "./06_streams.js";
 import { DOMException } from "./01_dom_exception.js";
 
 // counter of how many message ports are actively refed
@@ -56,11 +54,9 @@ class MessageChannel {
 
   constructor() {
     this[webidl.brand] = webidl.brand;
-    const { 0: port1Id, 1: port2Id } = opCreateEntangledMessagePort();
-    const port1 = createMessagePort(port1Id);
-    const port2 = createMessagePort(port2Id);
-    this.#port1 = port1;
-    this.#port2 = port2;
+    const { 0: port1, 1: port2 } = op_message_port_create_entangled();
+    this.#port1 = createMessagePort(port1);
+    this.#port2 = createMessagePort(port2);
   }
 
   get port1() {
@@ -93,9 +89,6 @@ const MessageChannelPrototype = MessageChannel.prototype;
 
 const _id = Symbol("id");
 const MessagePortIdSymbol = _id;
-const MessagePortReceiveMessageOnPortSymbol = Symbol(
-  "MessagePortReceiveMessageOnPort",
-);
 const _enabled = Symbol("enabled");
 const _refed = Symbol("refed");
 const _messageEventListenerCount = Symbol("messageEventListenerCount");
@@ -107,7 +100,7 @@ export const refMessagePort = Symbol("refMessagePort");
 export const unrefParentPort = Symbol("unrefParentPort");
 
 /**
- * @param {number} id
+ * @param {object} id
  * @returns {MessagePort}
  */
 function createMessagePort(id) {
@@ -146,11 +139,6 @@ class MessagePort extends EventTarget {
 
   constructor() {
     super();
-    ObjectDefineProperty(this, MessagePortReceiveMessageOnPortSymbol, {
-      __proto__: null,
-      value: false,
-      enumerable: false,
-    });
     ObjectDefineProperty(this, nodeWorkerThreadCloseCb, {
       __proto__: null,
       value: null,
@@ -232,24 +220,16 @@ class MessagePort extends EventTarget {
           nodeWorkerThreadMaybeInvokeCloseCb(this);
           break;
         }
-        let message, transferables;
+        let message, ports;
         try {
-          const v = deserializeJsMessageData(data);
-          message = v[0];
-          transferables = v[1];
+          ({ message, ports } = deserializeJsMessageData(data));
         } catch (err) {
           const event = new MessageEvent("messageerror", { data: err });
           setIsTrusted(event, true);
           this.dispatchEvent(event);
           return;
         }
-        const event = new MessageEvent("message", {
-          data: message,
-          ports: ArrayPrototypeFilter(
-            transferables,
-            (t) => ObjectPrototypeIsPrototypeOf(MessagePortPrototype, t),
-          ),
-        });
+        const event = new MessageEvent("message", { data: message, ports });
         setIsTrusted(event, true);
         this.dispatchEvent(event);
       }
@@ -284,7 +264,7 @@ class MessagePort extends EventTarget {
   close() {
     webidl.assertBranded(this, MessagePortPrototype);
     if (this[_id] !== null) {
-      core.close(this[_id]);
+      op_message_port_close(this[_id]);
       this[_id] = null;
       nodeWorkerThreadMaybeInvokeCloseCb(this);
     }
@@ -325,13 +305,13 @@ class MessagePort extends EventTarget {
   }
 }
 
-defineEventHandler(MessagePort.prototype, "message", function (self) {
+defineEventHandler(MessagePort.prototype, "message", (self) => {
   if (self[nodeWorkerThreadCloseCb]) {
     (async () => {
       // delay `start()` until he end of this event loop turn, to give `receiveMessageOnPort`
       // a chance to receive a message first. this is primarily to resolve an issue with
       // a pattern used in `npm:piscina` that results in an indefinite hang
-      await PromiseResolve();
+      await null;
       self.start();
     })();
   } else {
@@ -343,41 +323,34 @@ defineEventHandler(MessagePort.prototype, "messageerror");
 webidl.configureInterface(MessagePort);
 const MessagePortPrototype = MessagePort.prototype;
 
-/**
- * @returns {[number, number]}
- */
-function opCreateEntangledMessagePort() {
-  return op_message_port_create_entangled();
-}
+/** @import * as messagePort from "ext:deno_web/13_message_port.js" */
 
 /**
- * @param {messagePort.MessageData} messageData
- * @returns {[any, object[]]}
+ * @param {messagePort.MessageData} data
+ * @returns {{ message: unknown; ports: MessagePort[] }}
  */
-function deserializeJsMessageData(messageData) {
-  /** @type {object[]} */
-  const transferables = [];
-  const arrayBufferIdsInTransferables = [];
+function deserializeJsMessageData({ data, transferables }) {
+  /** @type {MessagePort[]} */
+  const ports = [];
+  /** @type {number[]} */
   const transferredArrayBuffers = [];
   let options;
 
-  if (messageData.transferables.length > 0) {
+  if (transferables.length > 0) {
+    /** @type {object[]} */
     const hostObjects = [];
-    for (let i = 0; i < messageData.transferables.length; ++i) {
-      const transferable = messageData.transferables[i];
+    for (let i = 0; i < transferables.length; ++i) {
+      const transferable = transferables[i];
       switch (transferable.kind) {
         case "messagePort": {
           const port = createMessagePort(transferable.data);
-          ArrayPrototypePush(transferables, port);
+          ArrayPrototypePush(ports, port);
           ArrayPrototypePush(hostObjects, port);
           break;
         }
-        case "arrayBuffer": {
+        case "arrayBuffer":
           ArrayPrototypePush(transferredArrayBuffers, transferable.data);
-          const index = ArrayPrototypePush(transferables, null);
-          ArrayPrototypePush(arrayBufferIdsInTransferables, index);
           break;
-        }
         default:
           throw new TypeError("Unreachable");
       }
@@ -389,33 +362,26 @@ function deserializeJsMessageData(messageData) {
     };
   }
 
-  const data = core.deserialize(messageData.data, options);
-
-  for (let i = 0; i < arrayBufferIdsInTransferables.length; ++i) {
-    const id = arrayBufferIdsInTransferables[i];
-    transferables[id] = transferredArrayBuffers[i];
-  }
-
-  return [data, transferables];
+  const message = core.deserialize(data, options);
+  return { message, ports };
 }
 
 /**
- * @param {any} data
+ * @param {unknown} message
  * @param {object[]} transferables
  * @returns {messagePort.MessageData}
  */
-function serializeJsMessageData(data, transferables) {
+function serializeJsMessageData(message, transferables) {
   let options;
+  /** @type {ArrayBuffer[]} */
   const transferredArrayBuffers = [];
   if (transferables.length > 0) {
+    /** @type {object[]} */
     const hostObjects = [];
     for (let i = 0, j = 0; i < transferables.length; i++) {
       const t = transferables[i];
       if (isArrayBuffer(t)) {
-        if (
-          ArrayBufferPrototypeGetByteLength(t) === 0 &&
-          isDetachedBuffer(t)
-        ) {
+        if (ArrayBufferPrototypeGetDetached(t)) {
           throw new DOMException(
             `ArrayBuffer at index ${j} is already detached`,
             "DataCloneError",
@@ -434,7 +400,7 @@ function serializeJsMessageData(data, transferables) {
     };
   }
 
-  const serializedData = core.serialize(data, options, (err) => {
+  const serializedData = core.serialize(message, options, (err) => {
     throw new DOMException(err, "DataCloneError");
   });
 
@@ -511,7 +477,7 @@ function structuredClone(value, options) {
   }
 
   const messageData = serializeJsMessageData(value, options.transfer);
-  return deserializeJsMessageData(messageData)[0];
+  return deserializeJsMessageData(messageData).message;
 }
 
 export {
@@ -520,7 +486,6 @@ export {
   MessagePort,
   MessagePortIdSymbol,
   MessagePortPrototype,
-  MessagePortReceiveMessageOnPortSymbol,
   nodeWorkerThreadCloseCb,
   refedMessagePortsCount,
   serializeJsMessageData,

@@ -9,7 +9,6 @@ import {
   op_host_terminate_worker,
 } from "ext:core/ops";
 const {
-  ArrayPrototypeFilter,
   Error,
   ObjectPrototypeIsPrototypeOf,
   String,
@@ -35,7 +34,6 @@ import {
 } from "ext:deno_web/02_event.js";
 import {
   deserializeJsMessageData,
-  MessagePortPrototype,
   serializeJsMessageData,
 } from "ext:deno_web/13_message_port.js";
 
@@ -56,7 +54,7 @@ function createWorker(
     specifier,
     workerType,
     closeOnIdle,
-  });
+  }, null);
 }
 
 function hostTerminateWorker(id) {
@@ -227,11 +225,9 @@ class Worker extends EventTarget {
       if (this.#status === "TERMINATED" || data === null) {
         return;
       }
-      let message, transferables;
+      let message, ports;
       try {
-        const v = deserializeJsMessageData(data);
-        message = v[0];
-        transferables = v[1];
+        ({ message, ports } = deserializeJsMessageData(data));
       } catch (err) {
         const event = new MessageEvent("messageerror", {
           cancelable: false,
@@ -244,10 +240,7 @@ class Worker extends EventTarget {
       const event = new MessageEvent("message", {
         cancelable: false,
         data: message,
-        ports: ArrayPrototypeFilter(
-          transferables,
-          (t) => ObjectPrototypeIsPrototypeOf(MessagePortPrototype, t),
-        ),
+        ports,
       });
       setIsTrusted(event, true);
       this.dispatchEvent(event);

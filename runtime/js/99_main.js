@@ -26,7 +26,6 @@ import {
   op_worker_sync_fetch,
 } from "ext:core/ops";
 const {
-  ArrayPrototypeFilter,
   ArrayPrototypeIncludes,
   ArrayPrototypeMap,
   Error,
@@ -222,18 +221,12 @@ async function pollForMessages() {
     const data = await recvMessage;
     // const data = await op_worker_recv_message();
     if (data === null) break;
-    const v = messagePort.deserializeJsMessageData(data);
-    const message = v[0];
-    const transferables = v[1];
+    const { message, ports } = messagePort.deserializeJsMessageData(data);
 
     const msgEvent = new event.MessageEvent("message", {
       cancelable: false,
       data: message,
-      ports: ArrayPrototypeFilter(
-        transferables,
-        (t) =>
-          ObjectPrototypeIsPrototypeOf(messagePort.MessagePortPrototype, t),
-      ),
+      ports,
     });
     event.setIsTrusted(msgEvent, true);
 

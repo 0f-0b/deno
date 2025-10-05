@@ -22,7 +22,6 @@ use encoding_rs::CoderResult;
 use encoding_rs::Decoder;
 use encoding_rs::DecoderResult;
 use encoding_rs::Encoding;
-pub use message_port::MessagePortError;
 pub use stream_resource::StreamResourceError;
 
 pub use crate::blob::Blob;
@@ -36,16 +35,15 @@ use crate::blob::op_blob_read_part;
 use crate::blob::op_blob_remove_part;
 use crate::blob::op_blob_revoke_object_url;
 use crate::blob::op_blob_slice_part;
-pub use crate::message_port::JsMessageData;
+pub use crate::message_port::MessageData;
 pub use crate::message_port::MessagePort;
 pub use crate::message_port::Transferable;
 pub use crate::message_port::create_entangled_message_port;
-pub use crate::message_port::deserialize_js_transferables;
+use crate::message_port::op_message_port_close;
 use crate::message_port::op_message_port_create_entangled;
 use crate::message_port::op_message_port_post_message;
 use crate::message_port::op_message_port_recv_message;
 use crate::message_port::op_message_port_recv_message_sync;
-pub use crate::message_port::serialize_transferables;
 pub use crate::timers::StartTime;
 pub use crate::timers::TimersPermission;
 use crate::timers::op_defer;
@@ -77,6 +75,7 @@ deno_core::extension!(deno_web,
     op_message_port_post_message,
     op_message_port_recv_message,
     op_message_port_recv_message_sync,
+    op_message_port_close,
     compression::op_compression_new,
     compression::op_compression_write,
     compression::op_compression_finish,
