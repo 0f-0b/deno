@@ -1495,7 +1495,11 @@ declare function reportError(
 ): void;
 
 /** @category Platform */
-type PredefinedColorSpace = "srgb" | "display-p3";
+type PredefinedColorSpace =
+  | "srgb"
+  | "srgb-linear"
+  | "display-p3"
+  | "display-p3-linear";
 
 /** @category Platform */
 type ImageDataArray =

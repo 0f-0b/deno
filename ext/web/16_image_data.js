@@ -17,7 +17,9 @@ webidl.converters["PredefinedColorSpace"] = webidl.createEnumConverter(
   "PredefinedColorSpace",
   [
     "srgb",
+    "srgb-linear",
     "display-p3",
+    "display-p3-linear",
   ],
 );
 
