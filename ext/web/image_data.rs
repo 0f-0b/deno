@@ -65,15 +65,21 @@ pub enum ImageDataError {
 pub enum PredefinedColorSpace {
   #[webidl(rename = "srgb")]
   Srgb,
+  #[webidl(rename = "srgb-linear")]
+  SrgbLinear,
   #[webidl(rename = "display-p3")]
   DisplayP3,
+  #[webidl(rename = "display-p3-linear")]
+  DisplayP3Linear,
 }
 
 impl PredefinedColorSpace {
   fn name(self) -> &'static str {
     match self {
       Self::Srgb => "srgb",
+      Self::SrgbLinear => "srgb-linear",
       Self::DisplayP3 => "display-p3",
+      Self::DisplayP3Linear => "display-p3-linear",
     }
   }
 }
