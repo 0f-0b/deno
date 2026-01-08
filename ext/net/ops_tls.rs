@@ -3,13 +3,10 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::convert::From;
-use std::fs::File;
 use std::io::BufReader;
 use std::io::ErrorKind;
-use std::io::Read;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -26,15 +23,14 @@ use deno_core::futures::TryFutureExt;
 use deno_core::op2;
 use deno_core::v8;
 use deno_error::JsErrorBox;
-use deno_permissions::OpenAccessKind;
 use deno_permissions::PermissionsContainer;
+use deno_tls::CertVerifierOptions;
 use deno_tls::ServerConfigProvider;
-use deno_tls::SocketUse;
-use deno_tls::TlsClientConfigOptions;
 use deno_tls::TlsKey;
 use deno_tls::TlsKeyLookup;
 use deno_tls::TlsKeys;
 use deno_tls::TlsKeysHolder;
+use deno_tls::create_certificate_verifier;
 use deno_tls::create_client_config;
 use deno_tls::get_ssl_key_log;
 use deno_tls::load_certs;
@@ -229,11 +225,10 @@ impl Resource for TlsStreamResource {
 
 #[derive(FromV8)]
 pub struct ConnectTlsArgs {
-  cert_file: Option<String>,
   ca_certs: Vec<String>,
   alpn_protocols: Option<Vec<String>>,
   server_name: Option<String>,
-  unsafely_disable_hostname_verification: Option<bool>,
+  unsafely_disable_hostname_verification: bool,
 }
 
 #[derive(FromV8)]
@@ -242,8 +237,8 @@ pub struct StartTlsArgs {
   ca_certs: Vec<String>,
   hostname: String,
   alpn_protocols: Option<Vec<String>>,
-  reject_unauthorized: Option<bool>,
-  unsafely_disable_hostname_verification: Option<bool>,
+  reject_unauthorized: bool,
+  unsafely_disable_hostname_verification: bool,
 }
 
 #[op2]
@@ -316,11 +311,18 @@ pub fn op_tls_start(
   #[cppgc] key_pair: Option<&TlsKeysHolder>,
 ) -> Result<(ResourceId, IpAddr, IpAddr), NetError> {
   let rid = args.rid;
-  let reject_unauthorized = args.reject_unauthorized.unwrap_or(true);
-  let hostname = match &*args.hostname {
+  let server_name = match &*args.hostname {
     "" => "localhost".to_string(),
     n => n.to_string(),
   };
+  let server_name = ServerName::try_from(server_name.clone())
+    .map_err(|_| NetError::InvalidHostname(server_name))?;
+
+  let root_cert_store = state
+    .borrow()
+    .borrow::<DefaultTlsOptions>()
+    .root_cert_store()
+    .map_err(NetError::RootCertStore)?;
 
   let ca_certs = args
     .ca_certs
@@ -328,11 +330,8 @@ pub fn op_tls_start(
     .map(|s| s.into_bytes())
     .collect::<Vec<_>>();
 
-  let hostname_dns = ServerName::try_from(hostname.to_string())
-    .map_err(|_| NetError::InvalidHostname(hostname))?;
-
   // --unsafely-ignore-certificate-errors overrides the `rejectUnauthorized` option.
-  let unsafely_ignore_certificate_errors = if reject_unauthorized {
+  let unsafely_ignore_certificate_errors = if args.reject_unauthorized {
     state
       .borrow()
       .try_borrow::<UnsafelyIgnoreCertificateErrors>()
@@ -342,13 +341,7 @@ pub fn op_tls_start(
   };
 
   let unsafely_disable_hostname_verification =
-    args.unsafely_disable_hostname_verification.unwrap_or(false);
-
-  let root_cert_store = state
-    .borrow()
-    .borrow::<DefaultTlsOptions>()
-    .root_cert_store()
-    .map_err(NetError::RootCertStore)?;
+    args.unsafely_disable_hostname_verification;
 
   let resource_rc = state
     .borrow_mut()
@@ -366,16 +359,15 @@ pub fn op_tls_start(
   let local_addr = tcp_stream.local_addr()?;
   let remote_addr = tcp_stream.peer_addr()?;
 
-  let tls_null = TlsKeysHolder::from(TlsKeys::Null);
-  let key_pair = key_pair.unwrap_or(&tls_null);
-  let mut tls_config = create_client_config(TlsClientConfigOptions {
-    root_cert_store,
-    ca_certs,
-    unsafely_ignore_certificate_errors,
-    unsafely_disable_hostname_verification,
-    cert_chain_and_key: key_pair.take(),
-    socket_use: SocketUse::GeneralSsl,
-  })?;
+  let mut tls_config = create_client_config(
+    create_certificate_verifier(CertVerifierOptions {
+      root_cert_store,
+      ca_certs,
+      unsafely_ignore_certificate_errors,
+      unsafely_disable_hostname_verification,
+    })?,
+    key_pair.map_or(TlsKeys::Null, TlsKeysHolder::take),
+  );
 
   if let Some(alpn_protocols) = args.alpn_protocols {
     tls_config.alpn_protocols =
@@ -385,7 +377,7 @@ pub fn op_tls_start(
   let tls_config = Arc::new(tls_config);
   let tls_stream = TlsStream::new_client_side(
     tcp_stream,
-    ClientConnection::new(tls_config, hostname_dns)?,
+    ClientConnection::new(tls_config, server_name)?,
     TLS_BUFFER_SIZE,
   );
 
@@ -406,74 +398,56 @@ pub async fn op_net_connect_tls(
   #[scoped] args: ConnectTlsArgs,
   #[cppgc] key_pair: &TlsKeysHolder,
 ) -> Result<(ResourceId, IpAddr, IpAddr), NetError> {
-  let cert_file = args.cert_file.as_deref();
-  let unsafely_ignore_certificate_errors = state
-    .borrow()
-    .try_borrow::<UnsafelyIgnoreCertificateErrors>()
-    .and_then(|it| it.0.clone());
-  let unsafely_disable_hostname_verification =
-    args.unsafely_disable_hostname_verification.unwrap_or(false);
-
-  let cert_file = {
+  {
     let mut s = state.borrow_mut();
     let permissions = s.borrow_mut::<PermissionsContainer>();
     permissions
       .check_net(&(&addr.hostname, Some(addr.port)), "Deno.connectTls()")
       .map_err(NetError::Permission)?;
-    if let Some(path) = cert_file {
-      Some(
-        permissions
-          .check_open(
-            Cow::Borrowed(Path::new(path)),
-            OpenAccessKind::ReadNoFollow,
-            Some("Deno.connectTls()"),
-          )
-          .map_err(NetError::Permission)?,
-      )
-    } else {
-      None
-    }
-  };
+  }
 
-  let mut ca_certs = args
-    .ca_certs
-    .into_iter()
-    .map(|s| s.into_bytes())
-    .collect::<Vec<_>>();
+  let connect_addr = resolve_addr(&addr.hostname, addr.port)
+    .await?
+    .next()
+    .ok_or(NetError::NoResolvedAddress)?;
 
-  if let Some(path) = cert_file {
-    let mut buf = Vec::new();
-    File::open(path)?.read_to_end(&mut buf)?;
-    ca_certs.push(buf);
-  };
+  let server_name = args.server_name.unwrap_or(addr.hostname);
+  let server_name = ServerName::try_from(server_name.clone())
+    .map_err(|_| NetError::InvalidHostname(server_name))?;
 
   let root_cert_store = state
     .borrow()
     .borrow::<DefaultTlsOptions>()
     .root_cert_store()
     .map_err(NetError::RootCertStore)?;
-  let hostname_dns = if let Some(server_name) = args.server_name {
-    ServerName::try_from(server_name)
-  } else {
-    ServerName::try_from(addr.hostname.clone())
-  }
-  .map_err(|_| NetError::InvalidHostname(addr.hostname.clone()))?;
-  let connect_addr = resolve_addr(&addr.hostname, addr.port)
-    .await?
-    .next()
-    .ok_or_else(|| NetError::NoResolvedAddress)?;
+
+  let ca_certs = args
+    .ca_certs
+    .into_iter()
+    .map(|s| s.into_bytes())
+    .collect::<Vec<_>>();
+
+  let unsafely_ignore_certificate_errors = state
+    .borrow()
+    .try_borrow::<UnsafelyIgnoreCertificateErrors>()
+    .and_then(|it| it.0.clone());
+
+  let unsafely_disable_hostname_verification =
+    args.unsafely_disable_hostname_verification;
+
   let tcp_stream = TcpStream::connect(connect_addr).await?;
   let local_addr = tcp_stream.local_addr()?;
   let remote_addr = tcp_stream.peer_addr()?;
 
-  let mut tls_config = create_client_config(TlsClientConfigOptions {
-    root_cert_store,
-    ca_certs,
-    unsafely_ignore_certificate_errors,
-    unsafely_disable_hostname_verification,
-    cert_chain_and_key: key_pair.take(),
-    socket_use: SocketUse::GeneralSsl,
-  })?;
+  let mut tls_config = create_client_config(
+    create_certificate_verifier(CertVerifierOptions {
+      root_cert_store,
+      ca_certs,
+      unsafely_ignore_certificate_errors,
+      unsafely_disable_hostname_verification,
+    })?,
+    key_pair.take(),
+  );
 
   if let Some(alpn_protocols) = args.alpn_protocols {
     tls_config.alpn_protocols =
@@ -484,7 +458,7 @@ pub async fn op_net_connect_tls(
 
   let tls_stream = TlsStream::new_client_side(
     tcp_stream,
-    ClientConnection::new(tls_config, hostname_dns)?,
+    ClientConnection::new(tls_config, server_name)?,
     TLS_BUFFER_SIZE,
   );
 
@@ -583,7 +557,7 @@ pub async fn op_net_accept_tls(
   let cancel_handle = RcRef::map(&resource, |r| &r.cancel);
   let listener = RcRef::map(&resource, |r| &r.listener)
     .try_borrow_mut()
-    .ok_or_else(|| NetError::AcceptTaskOngoing)?;
+    .ok_or(NetError::AcceptTaskOngoing)?;
 
   let (tls_stream, remote_addr) =
     match listener.accept().try_or_cancel(&cancel_handle).await {
