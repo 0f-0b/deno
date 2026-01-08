@@ -58,7 +58,6 @@ use deno_permissions::PermissionCheckError;
 use deno_permissions::PermissionsContainer;
 use deno_tls::Proxy;
 use deno_tls::RootCertStoreProvider;
-use deno_tls::SocketUse;
 use deno_tls::TlsKey;
 use deno_tls::TlsKeys;
 use deno_tls::TlsKeysHolder;
@@ -980,20 +979,19 @@ pub fn create_http_client(
   user_agent: &str,
   options: CreateHttpClientOptions,
 ) -> Result<Client, HttpClientCreateError> {
-  let mut tls_config =
-    deno_tls::create_client_config(deno_tls::TlsClientConfigOptions {
+  let mut tls_config = deno_tls::create_client_config(
+    deno_tls::create_certificate_verifier(deno_tls::CertVerifierOptions {
       root_cert_store: options.root_cert_store,
       ca_certs: options.ca_certs,
       unsafely_ignore_certificate_errors: options
         .unsafely_ignore_certificate_errors,
-      unsafely_disable_hostname_verification: false,
-      cert_chain_and_key: options.client_cert_chain_and_key.into(),
-      socket_use: deno_tls::SocketUse::Http,
+      ..Default::default()
     })
-    .map_err(HttpClientCreateError::Tls)?;
+    .map_err(HttpClientCreateError::Tls)?,
+    options.client_cert_chain_and_key.into(),
+  );
 
   // Proxy TLS should not send ALPN
-  tls_config.alpn_protocols.clear();
   let proxy_tls_config = Arc::from(tls_config.clone());
 
   let mut alpn_protocols = vec![];
@@ -1122,6 +1120,11 @@ pub fn op_utf8_to_byte_string(#[string] input: String) -> ByteString {
   input.into()
 }
 
+pub enum Alpn {
+  Http11,
+  H2,
+}
+
 #[derive(Clone, Debug)]
 pub struct Client {
   inner: Decompression<
@@ -1151,7 +1154,7 @@ impl Client {
   pub async fn connect(
     &self,
     uri: Uri,
-    socket_use: SocketUse,
+    alpn: Alpn,
   ) -> Result<
     impl tokio::io::AsyncRead
     + tokio::io::AsyncWrite
@@ -1161,20 +1164,19 @@ impl Client {
     + 'static,
     ClientConnectError,
   > {
-    let mut connector = match socket_use {
-      SocketUse::Http1Only => {
+    let mut connector = match alpn {
+      Alpn::Http11 => {
         let Some(connector) = self.connector.clone().h1_only() else {
           return Err(ClientConnectError::Http1NotSupported);
         };
         connector
       }
-      SocketUse::Http2Only => {
+      Alpn::H2 => {
         let Some(connector) = self.connector.clone().h2_only() else {
           return Err(ClientConnectError::Http2NotSupported);
         };
         connector
       }
-      _ => self.connector.clone(),
     };
     let connection = connector
       .call(uri)

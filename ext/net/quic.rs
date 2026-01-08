@@ -38,11 +38,11 @@ use deno_error::JsError;
 use deno_error::JsErrorBox;
 use deno_permissions::PermissionCheckError;
 use deno_permissions::PermissionsContainer;
-use deno_tls::SocketUse;
-use deno_tls::TlsClientConfigOptions;
+use deno_tls::CertVerifierOptions;
 use deno_tls::TlsError;
 use deno_tls::TlsKeys;
 use deno_tls::TlsKeysHolder;
+use deno_tls::create_certificate_verifier;
 use deno_tls::create_client_config;
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::crypto::rustls::QuicServerConfig;
@@ -235,7 +235,7 @@ pub(crate) fn op_quic_endpoint_create(
 ) -> Result<EndpointResource, QuicError> {
   let addr = resolve_addr_sync(&addr.hostname, addr.port)?
     .next()
-    .ok_or_else(|| QuicError::UnableToResolve)?;
+    .ok_or(QuicError::UnableToResolve)?;
 
   if can_listen {
     state
@@ -555,48 +555,47 @@ pub(crate) fn op_quic_endpoint_connect(
 
   let sock_addr = resolve_addr_sync(&args.addr.hostname, args.addr.port)?
     .next()
-    .ok_or_else(|| QuicError::UnableToResolve)?;
+    .ok_or(QuicError::UnableToResolve)?;
 
-  let root_cert_store = state
-    .borrow()
-    .borrow::<DefaultTlsOptions>()
-    .root_cert_store()?;
+  let server_name = args.server_name.unwrap_or(args.addr.hostname);
 
-  let unsafely_ignore_certificate_errors = state
-    .borrow()
-    .try_borrow::<UnsafelyIgnoreCertificateErrors>()
-    .and_then(|it| it.0.clone());
+  let mut tls_config = create_client_config(
+    match args.server_certificate_hashes {
+      Some(hashes) => Arc::new(webtransport::ServerFingerprints::new(
+        hashes
+          .into_iter()
+          .filter(|h| h.algorithm.to_lowercase() == "sha-256")
+          .map(|h| h.value.to_vec())
+          .collect(),
+      )),
+      None => {
+        let root_cert_store = state
+          .borrow()
+          .borrow::<DefaultTlsOptions>()
+          .root_cert_store()?;
 
-  let ca_certs = args
-    .ca_certs
-    .unwrap_or_default()
-    .into_iter()
-    .map(|s| s.into_bytes())
-    .collect::<Vec<_>>();
+        let ca_certs = args
+          .ca_certs
+          .unwrap_or_default()
+          .into_iter()
+          .map(|s| s.into_bytes())
+          .collect::<Vec<_>>();
 
-  let mut tls_config = if let Some(hashes) = args.server_certificate_hashes {
-    deno_tls::rustls::ClientConfig::builder()
-      .dangerous()
-      .with_custom_certificate_verifier(Arc::new(
-        webtransport::ServerFingerprints::new(
-          hashes
-            .into_iter()
-            .filter(|h| h.algorithm.to_lowercase() == "sha-256")
-            .map(|h| h.value.to_vec())
-            .collect(),
-        ),
-      ))
-      .with_no_client_auth()
-  } else {
-    create_client_config(TlsClientConfigOptions {
-      root_cert_store,
-      ca_certs,
-      unsafely_ignore_certificate_errors,
-      unsafely_disable_hostname_verification: false,
-      cert_chain_and_key: key_pair.take(),
-      socket_use: SocketUse::GeneralSsl,
-    })?
-  };
+        let unsafely_ignore_certificate_errors = state
+          .borrow()
+          .try_borrow::<UnsafelyIgnoreCertificateErrors>()
+          .and_then(|it| it.0.clone());
+
+        create_certificate_verifier(CertVerifierOptions {
+          root_cert_store,
+          ca_certs,
+          unsafely_ignore_certificate_errors,
+          ..Default::default()
+        })?
+      }
+    },
+    key_pair.take(),
+  );
 
   if let Some(alpn_protocols) = args.alpn_protocols {
     tls_config.alpn_protocols =
@@ -611,11 +610,10 @@ pub(crate) fn op_quic_endpoint_connect(
   let mut client_config = quinn::ClientConfig::new(Arc::new(client_config));
   client_config.transport_config(Arc::new(transport_config.try_into()?));
 
-  let connecting = endpoint.endpoint.connect_with(
-    client_config,
-    sock_addr,
-    &args.server_name.unwrap_or(args.addr.hostname),
-  )?;
+  let connecting =
+    endpoint
+      .endpoint
+      .connect_with(client_config, sock_addr, &server_name)?;
 
   Ok(ConnectingResource(RefCell::new(Some(connecting))))
 }

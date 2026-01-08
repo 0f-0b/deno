@@ -1074,15 +1074,14 @@ async fn initialize_tunnel(
   let root_cert_store = cert_store_provider.get_or_try_init()?.clone();
 
   let tls_config = deno_runtime::deno_tls::create_client_config(
-    deno_runtime::deno_tls::TlsClientConfigOptions {
-      root_cert_store: Some(root_cert_store),
-      ca_certs: vec![],
-      unsafely_ignore_certificate_errors: None,
-      unsafely_disable_hostname_verification: false,
-      cert_chain_and_key: deno_runtime::deno_tls::TlsKeys::Null,
-      socket_use: deno_runtime::deno_tls::SocketUse::GeneralSsl,
-    },
-  )?;
+    deno_runtime::deno_tls::create_certificate_verifier(
+      deno_runtime::deno_tls::CertVerifierOptions {
+        root_cert_store: Some(root_cert_store),
+        ..Default::default()
+      },
+    )?,
+    deno_runtime::deno_tls::TlsKeys::Null,
+  );
 
   let mut metadata = HashMap::new();
   metadata.insert(

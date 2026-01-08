@@ -54,10 +54,13 @@ async function connectTls({
   hostname = "127.0.0.1",
   transport = "tcp",
   caCerts = [],
-  alpnProtocols = undefined,
-  keyFormat = undefined,
-  cert = undefined,
-  key = undefined,
+  alpnProtocols,
+  // TODO(mmastrac): We only expose this feature via symbol for now. This should actually be a feature
+  // in Deno.connectTls, however.
+  [serverNameSymbol]: serverName,
+  keyFormat,
+  cert,
+  key,
   unsafelyDisableHostnameVerification = false,
 }) {
   if (transport !== "tcp") {
@@ -69,9 +72,6 @@ async function connectTls({
     cert,
     key,
   });
-  // TODO(mmastrac): We only expose this feature via symbol for now. This should actually be a feature
-  // in Deno.connectTls, however.
-  const serverName = arguments[0][serverNameSymbol] ?? null;
   const { 0: rid, 1: localAddr, 2: remoteAddr } = await op_net_connect_tls(
     { hostname, port },
     { caCerts, alpnProtocols, serverName, unsafelyDisableHostnameVerification },
@@ -160,7 +160,7 @@ function listenTls({
   port,
   hostname = "0.0.0.0",
   transport = "tcp",
-  alpnProtocols = undefined,
+  alpnProtocols,
   reusePort = false,
   tcpBacklog = 511,
 }) {
@@ -187,13 +187,14 @@ function listenTls({
 async function startTls(
   conn,
   {
-    hostname = "127.0.0.1",
-    caCerts = [],
-    alpnProtocols = undefined,
-    unsafelyDisableHostnameVerification = false,
+    hostname,
+    caCerts,
+    alpnProtocols,
+    unsafelyDisableHostnameVerification,
   } = { __proto__: null },
 ) {
   return startTlsInternal(conn, {
+    __proto__: null,
     hostname,
     caCerts,
     alpnProtocols,
@@ -206,10 +207,10 @@ function startTlsInternal(
   {
     hostname = "127.0.0.1",
     caCerts = [],
-    alpnProtocols = undefined,
-    keyPair = null,
-    rejectUnauthorized,
-    unsafelyDisableHostnameVerification,
+    alpnProtocols,
+    keyPair,
+    rejectUnauthorized = true,
+    unsafelyDisableHostnameVerification = false,
   },
 ) {
   const { 0: rid, 1: localAddr, 2: remoteAddr } = op_tls_start({
