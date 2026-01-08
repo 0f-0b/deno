@@ -22,6 +22,7 @@ use deno_core::op2;
 use deno_core::unsync::spawn;
 use deno_core::url;
 use deno_error::JsErrorBox;
+use deno_fetch::Alpn;
 use deno_fetch::ClientConnectError;
 use deno_fetch::HttpClientCreateError;
 use deno_fetch::HttpClientResource;
@@ -29,7 +30,6 @@ use deno_fetch::get_or_create_client_from_state;
 use deno_net::raw::NetworkStream;
 use deno_permissions::PermissionCheckError;
 use deno_permissions::PermissionsContainer;
-use deno_tls::SocketUse;
 use fastwebsockets::CloseCode;
 use fastwebsockets::FragmentCollectorRead;
 use fastwebsockets::Frame;
@@ -257,7 +257,7 @@ async fn handshake_http1(
     .authority(authority.clone())
     .path_and_query(path_and_query.clone())
     .build()?;
-  let connection = client.connect(connection_uri, SocketUse::Http1Only).await?;
+  let connection = client.connect(connection_uri, Alpn::Http11).await?;
 
   let is_proxied = connection.connected().is_proxied();
   let host = match authority.port() {
@@ -309,7 +309,7 @@ async fn handshake_http2(
   protocols: &str,
   headers: &Option<Vec<(ByteString, ByteString)>>,
 ) -> Result<(WebSocket<WebSocketStream>, http::HeaderMap), HandshakeError> {
-  let connection = client.connect(uri.clone(), SocketUse::Http2Only).await?;
+  let connection = client.connect(uri.clone(), Alpn::H2).await?;
   if !connection.connected().is_negotiated_h2() {
     return Err(HandshakeError::NoH2Alpn);
   }
