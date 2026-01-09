@@ -571,6 +571,10 @@ declare namespace Deno {
      * TLS handshake.
      */
     alpnProtocols?: string[];
+    /** An ECHConfigList structure including the length prefix, for encrypting
+     * the ClientHello.
+     */
+    echConfigList?: Uint8Array<ArrayBuffer>;
     /** If true, the certificate's common name or subject alternative names will not be
      * checked against the hostname provided in the options.
      *
@@ -648,6 +652,10 @@ declare namespace Deno {
      * TLS handshake.
      */
     alpnProtocols?: string[];
+    /** An ECHConfigList structure including the length prefix, for encrypting
+     * the ClientHello.
+     */
+    echConfigList?: Uint8Array<ArrayBuffer>;
     /** If true, the certificate's common name or subject alternative names will not be
      * checked against the hostname provided in the options.
      *
@@ -762,6 +770,10 @@ declare namespace Deno {
      * the client. QUIC requires the use of ALPN.
      */
     alpnProtocols: string[];
+    /** An ECHConfigList structure including the length prefix, for encrypting
+     * the ClientHello.
+     */
+    echConfigList?: Uint8Array<ArrayBuffer>;
     /** A list of root certificates that will be used in addition to the
      * default root certificates to verify the peer's certificate.
      *
