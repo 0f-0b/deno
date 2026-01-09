@@ -1417,6 +1417,7 @@ async fn initialize_tunnel(
       },
     )?,
     deno_runtime::deno_tls::TlsKeys::Null,
+    None,
   )?;
 
   let mut metadata = HashMap::new();
