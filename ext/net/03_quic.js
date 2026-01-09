@@ -586,6 +586,7 @@ function connectQuic(options) {
       caCerts: options.caCerts,
       alpnProtocols: options.alpnProtocols,
       serverName: options.serverName,
+      echConfigList: options.echConfigList,
       serverCertificateHashes: options.serverCertificateHashes,
     },
     transportOptions(options),
