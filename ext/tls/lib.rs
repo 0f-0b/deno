@@ -12,6 +12,7 @@ use rustls::ClientConfig;
 use rustls::DigitallySignedStruct;
 use rustls::RootCertStore;
 use rustls::SignatureScheme;
+use rustls::client::EchMode;
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::HandshakeSignatureValid;
 use rustls::client::danger::ServerCertVerified;
@@ -318,6 +319,7 @@ pub fn create_certificate_verifier(
 pub fn create_client_config(
   server_cert_verifier: Arc<dyn ServerCertVerifier>,
   client_cert_chain_and_key: TlsKeys,
+  ech_mode: Option<EchMode>,
 ) -> ClientConfig {
   let builder = ClientConfig::builder_with_provider(
     rustls::crypto::CryptoProvider::get_default()
@@ -325,7 +327,11 @@ pub fn create_client_config(
       .clone(),
   );
 
-  let builder = builder.with_safe_default_protocol_versions().unwrap();
+  let builder = match ech_mode {
+    Some(mode) => builder.with_ech(mode),
+    None => builder.with_safe_default_protocol_versions(),
+  }
+  .unwrap();
 
   let builder = builder
     .dangerous()
