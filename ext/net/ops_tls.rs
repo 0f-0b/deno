@@ -14,6 +14,7 @@ use deno_core::AsyncRefCell;
 use deno_core::AsyncResult;
 use deno_core::CancelHandle;
 use deno_core::CancelTryFuture;
+use deno_core::JsBuffer;
 use deno_core::OpState;
 use deno_core::RcRef;
 use deno_core::Resource;
@@ -36,6 +37,8 @@ use deno_tls::load_private_keys;
 use deno_tls::new_resolver;
 use deno_tls::rustls::ClientConnection;
 use deno_tls::rustls::ServerConfig;
+use deno_tls::rustls::client::EchConfig;
+use deno_tls::rustls::crypto::aws_lc_rs::hpke::ALL_SUPPORTED_SUITES;
 use deno_tls::rustls::pki_types::ServerName;
 pub use rustls_tokio_stream::TlsStream;
 pub use rustls_tokio_stream::TlsStreamRead;
@@ -228,6 +231,7 @@ pub struct ConnectTlsArgs {
   ca_certs: Vec<String>,
   alpn_protocols: Option<Vec<String>>,
   server_name: Option<String>,
+  ech_config_list: Option<JsBuffer>,
   unsafely_disable_hostname_verification: bool,
 }
 
@@ -238,6 +242,7 @@ pub struct StartTlsArgs {
   ca_certs: Vec<String>,
   hostname: String,
   alpn_protocols: Option<Vec<String>>,
+  ech_config_list: Option<JsBuffer>,
   reject_unauthorized: bool,
   unsafely_disable_hostname_verification: bool,
 }
@@ -320,6 +325,11 @@ pub fn op_tls_start(
   let server_name = ServerName::try_from(server_name.clone())
     .map_err(|_| NetError::InvalidHostname(server_name))?;
 
+  let ech_mode = match args.ech_config_list.as_deref() {
+    Some(ecl) => Some(EchConfig::new(ecl.into(), ALL_SUPPORTED_SUITES)?.into()),
+    None => None,
+  };
+
   let root_cert_store = state
     .borrow()
     .borrow::<DefaultTlsOptions>()
@@ -369,6 +379,7 @@ pub fn op_tls_start(
       unsafely_disable_hostname_verification,
     })?,
     key_pair.map_or(TlsKeys::Null, TlsKeysHolder::take),
+    ech_mode,
   );
 
   if let Some(alpn_protocols) = args.alpn_protocols {
@@ -418,6 +429,11 @@ pub async fn op_net_connect_tls(
   let server_name = ServerName::try_from(server_name.clone())
     .map_err(|_| NetError::InvalidHostname(server_name))?;
 
+  let ech_mode = match args.ech_config_list.as_deref() {
+    Some(ecl) => Some(EchConfig::new(ecl.into(), ALL_SUPPORTED_SUITES)?.into()),
+    None => None,
+  };
+
   let root_cert_store = state
     .borrow()
     .borrow::<DefaultTlsOptions>()
@@ -450,6 +466,7 @@ pub async fn op_net_connect_tls(
       unsafely_disable_hostname_verification,
     })?,
     key_pair.take(),
+    ech_mode,
   );
 
   if let Some(alpn_protocols) = args.alpn_protocols {
