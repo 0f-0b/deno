@@ -989,6 +989,7 @@ pub fn create_http_client(
     })
     .map_err(HttpClientCreateError::Tls)?,
     options.client_cert_chain_and_key.into(),
+    None,
   );
 
   // Proxy TLS should not send ALPN

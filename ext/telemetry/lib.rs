@@ -800,6 +800,7 @@ mod hyper_client {
             },
           )?,
           keys,
+          None,
         );
         tls_config.alpn_protocols = vec!["h2".into(), "http/1.1".into()];
         let mut http_connector = HttpConnector::new();

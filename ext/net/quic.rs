@@ -48,7 +48,9 @@ use quinn::crypto::rustls::QuicClientConfig;
 use quinn::crypto::rustls::QuicServerConfig;
 use quinn::rustls::client::ClientSessionMemoryCache;
 use quinn::rustls::client::ClientSessionStore;
+use quinn::rustls::client::EchConfig;
 use quinn::rustls::client::Resumption;
+use quinn::rustls::crypto::aws_lc_rs::hpke::ALL_SUPPORTED_SUITES;
 
 use crate::DefaultTlsOptions;
 use crate::UnsafelyIgnoreCertificateErrors;
@@ -525,6 +527,8 @@ struct ConnectArgs {
   addr: Addr,
   ca_certs: Option<Vec<String>>,
   alpn_protocols: Option<Vec<String>>,
+  #[from_v8(serde)]
+  ech_config_list: Option<JsBuffer>,
   server_name: Option<String>,
   server_certificate_hashes: Option<Vec<CertificateHash>>,
 }
@@ -558,6 +562,11 @@ pub(crate) fn op_quic_endpoint_connect(
     .ok_or(QuicError::UnableToResolve)?;
 
   let server_name = args.server_name.unwrap_or(args.addr.hostname);
+
+  let ech_mode = match args.ech_config_list.as_deref() {
+    Some(ecl) => Some(EchConfig::new(ecl.into(), ALL_SUPPORTED_SUITES)?.into()),
+    None => None,
+  };
 
   let mut tls_config = create_client_config(
     match args.server_certificate_hashes {
@@ -595,6 +604,7 @@ pub(crate) fn op_quic_endpoint_connect(
       }
     },
     key_pair.take(),
+    ech_mode,
   );
 
   if let Some(alpn_protocols) = args.alpn_protocols {
