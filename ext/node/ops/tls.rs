@@ -597,6 +597,7 @@ pub fn op_node_tls_start(
       ..Default::default()
     })?,
     TlsKeys::Null,
+    None,
   );
 
   if let Some(alpn_protocols) = args.alpn_protocols {
