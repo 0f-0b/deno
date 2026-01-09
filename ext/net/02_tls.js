@@ -61,6 +61,7 @@ async function connectTls({
   // TODO(mmastrac): We only expose this feature via symbol for now. This should actually be a feature
   // in Deno.connectTls, however.
   [serverNameSymbol]: serverName,
+  echConfigList,
   keyFormat,
   cert,
   key,
@@ -79,7 +80,13 @@ async function connectTls({
   });
   const { 0: rid, 1: localAddr, 2: remoteAddr } = await op_net_connect_tls(
     { hostname, port },
-    { caCerts, alpnProtocols, serverName, unsafelyDisableHostnameVerification },
+    {
+      caCerts,
+      alpnProtocols,
+      serverName,
+      echConfigList,
+      unsafelyDisableHostnameVerification,
+    },
     keyPair,
     { autoSelectFamily, autoSelectFamilyAttemptDelay },
   );
@@ -197,6 +204,7 @@ async function startTls(
     hostname,
     caCerts,
     alpnProtocols,
+    echConfigList,
     unsafelyDisableHostnameVerification,
   } = { __proto__: null },
 ) {
@@ -205,6 +213,7 @@ async function startTls(
     hostname,
     caCerts,
     alpnProtocols,
+    echConfigList,
     unsafelyDisableHostnameVerification,
   });
 }
@@ -215,6 +224,7 @@ function startTlsInternal(
     hostname = "127.0.0.1",
     caCerts = [],
     alpnProtocols,
+    echConfigList,
     keyPair,
     rejectUnauthorized = true,
     unsafelyDisableHostnameVerification = false,
@@ -225,6 +235,7 @@ function startTlsInternal(
     hostname,
     caCerts,
     alpnProtocols,
+    echConfigList,
     rejectUnauthorized,
     unsafelyDisableHostnameVerification,
   }, keyPair);
