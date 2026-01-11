@@ -13,10 +13,22 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-use deno_core::futures::TryFutureExt;
+use deno_tls::TlsKey;
+use deno_tls::create_client_config;
 use deno_tls::rustls::ClientConfig as TlsConfig;
+use deno_tls::rustls::client::EchConfig;
+use deno_tls::rustls::client::danger::ServerCertVerifier;
+use deno_tls::rustls::crypto::aws_lc_rs::hpke::ALL_SUPPORTED_SUITES;
+use hickory_resolver::proto::rr::RData;
+use hickory_resolver::proto::rr::RecordType;
+use hickory_resolver::proto::rr::rdata::svcb::Alpn;
+use hickory_resolver::proto::rr::rdata::svcb::EchConfigList;
+use hickory_resolver::proto::rr::rdata::svcb::Mandatory;
+use hickory_resolver::proto::rr::rdata::svcb::SvcParamKey;
+use hickory_resolver::proto::rr::rdata::svcb::SvcParamValue;
 use http::Uri;
 use http::header::HeaderValue;
+use http::uri::Authority;
 use http::uri::Scheme;
 use hyper_rustls::HttpsConnector;
 use hyper_rustls::MaybeHttpsStream;
@@ -43,8 +55,10 @@ use tower_service::Service;
 pub(crate) struct ProxyConnector<C> {
   pub(crate) http: C,
   pub(crate) proxies: Arc<Proxies>,
-  /// TLS config when destination is not a proxy
-  pub(crate) tls: Arc<TlsConfig>,
+  pub(crate) server_cert_verifier: Arc<dyn ServerCertVerifier>,
+  pub(crate) client_cert_chain_and_key: Option<TlsKey>,
+  pub(crate) alpn_protocols: Vec<Vec<u8>>,
+  pub(crate) https_resolver: Arc<hickory_resolver::TokioResolver>,
   /// TLS config when destination is a proxy
   /// Notably, does not include ALPN
   pub(crate) tls_proxy: Arc<TlsConfig>,
@@ -56,15 +70,16 @@ impl<C> ProxyConnector<C> {
   where
     C: Service<Uri>,
   {
-    if !self.tls.alpn_protocols.is_empty() {
-      self.tls.alpn_protocols.iter().find(|p| *p == b"http/1.1")?;
+    if !self.alpn_protocols.is_empty() {
+      self.alpn_protocols.iter().find(|p| *p == b"http/1.1")?;
     }
-    let mut tls = (*self.tls).clone();
-    tls.alpn_protocols = vec![b"http/1.1".to_vec()];
     Some(ProxyConnector {
       http: self.http,
       proxies: self.proxies,
-      tls: Arc::new(tls),
+      server_cert_verifier: self.server_cert_verifier,
+      client_cert_chain_and_key: self.client_cert_chain_and_key,
+      alpn_protocols: vec!["http/1.1".into()],
+      https_resolver: self.https_resolver,
       tls_proxy: self.tls_proxy,
       user_agent: self.user_agent,
     })
@@ -74,15 +89,16 @@ impl<C> ProxyConnector<C> {
   where
     C: Service<Uri>,
   {
-    if !self.tls.alpn_protocols.is_empty() {
-      self.tls.alpn_protocols.iter().find(|p| *p == b"h2")?;
+    if !self.alpn_protocols.is_empty() {
+      self.alpn_protocols.iter().find(|p| *p == b"h2")?;
     }
-    let mut tls = (*self.tls).clone();
-    tls.alpn_protocols = vec![b"h2".to_vec()];
     Some(ProxyConnector {
       http: self.http,
       proxies: self.proxies,
-      tls: Arc::new(tls),
+      server_cert_verifier: self.server_cert_verifier,
+      client_cert_chain_and_key: self.client_cert_chain_and_key,
+      alpn_protocols: vec![b"h2".to_vec()],
+      https_resolver: self.https_resolver,
       tls_proxy: self.tls_proxy,
       user_agent: self.user_agent,
     })
@@ -564,7 +580,7 @@ pub enum Proxied<T> {
 
 impl<C> Service<Uri> for ProxyConnector<C>
 where
-  C: Service<Uri> + Clone,
+  C: Service<Uri> + Clone + Send + 'static,
   C::Response:
     hyper::rt::Read + hyper::rt::Write + Connection + Unpin + Send + 'static,
   C::Future: Send + 'static,
@@ -583,7 +599,7 @@ where
 
   fn call(&mut self, orig_dst: Uri) -> Self::Future {
     if let Some(intercept) = self.intercept(&orig_dst).cloned() {
-      let is_https = orig_dst.scheme() == Some(&Scheme::HTTPS);
+      let mut is_https = orig_dst.scheme() == Some(&Scheme::HTTPS);
       let user_agent = self.user_agent.clone();
       return match intercept.target {
         Target::Http {
@@ -594,20 +610,37 @@ where
           dst: proxy_dst,
           auth,
         } => {
-          let mut connector =
-            HttpsConnector::from((self.http.clone(), self.tls_proxy.clone()));
-          let connecting = connector.call(proxy_dst);
-          let tls = TlsConnector::from(self.tls.clone());
+          let http = self.http.clone();
+          let server_cert_verifier = self.server_cert_verifier.clone();
+          let client_cert_chain_and_key =
+            self.client_cert_chain_and_key.clone();
+          let https_resolver = self.https_resolver.clone();
+          let tls_proxy = self.tls_proxy.clone();
           Box::pin(async move {
-            let mut io = connecting.await?;
+            let (dst, ech_mode) =
+              match lookup_https(&https_resolver, &orig_dst).await? {
+                Some(https) => {
+                  is_https = true;
+                  (https.target, https.ech_config.map(Into::into))
+                }
+                None => (orig_dst.into_parts().authority.unwrap(), None),
+              };
+            let mut connector = HttpsConnector::from((http, tls_proxy));
+            let mut io = connector.call(proxy_dst).await?;
 
             if is_https {
-              tunnel(&mut io, &orig_dst, user_agent, auth).await?;
-              let host = orig_dst.host().unwrap();
+              tunnel(&mut io, &dst, user_agent, auth).await?;
+              let host = dst.host();
               let host = host
                 .strip_prefix('[')
                 .and_then(|s| s.strip_suffix(']'))
                 .unwrap_or(host);
+              let tls = Arc::new(create_client_config(
+                server_cert_verifier,
+                client_cert_chain_and_key.into(),
+                ech_mode,
+              ));
+              let tls = TlsConnector::from(tls);
               let tokio_io = TokioIo::new(io);
               let io = tls
                 .connect(TryFrom::try_from(host.to_owned())?, tokio_io)
@@ -622,22 +655,30 @@ where
           dst: proxy_dst,
           auth,
         } => {
-          let tls = TlsConnector::from(self.tls.clone());
+          let server_cert_verifier = self.server_cert_verifier.clone();
+          let client_cert_chain_and_key =
+            self.client_cert_chain_and_key.clone();
+          let https_resolver = self.https_resolver.clone();
           Box::pin(async move {
+            let (dst, ech_mode) =
+              match lookup_https(&https_resolver, &orig_dst).await? {
+                Some(https) => {
+                  is_https = true;
+                  (https.target, https.ech_config.map(Into::into))
+                }
+                None => (orig_dst.into_parts().authority.unwrap(), None),
+              };
             let socks_addr = (
               proxy_dst.host().unwrap(),
-              proxy_dst.port().map(|p| p.as_u16()).unwrap_or(1080),
+              proxy_dst.port_u16().unwrap_or(1080),
             );
-            let host = orig_dst.host().ok_or("no host in url")?;
+            let host = dst.host();
             let host = host
               .strip_prefix('[')
               .and_then(|s| s.strip_suffix(']'))
               .unwrap_or(host);
-            let port = match orig_dst.port() {
-              Some(p) => p.as_u16(),
-              None if is_https => 443,
-              _ => 80,
-            };
+            let port =
+              dst.port_u16().unwrap_or(if is_https { 443 } else { 80 });
             let io = if let Some((user, pass)) = auth {
               Socks5Stream::connect_with_password(
                 socks_addr,
@@ -652,6 +693,12 @@ where
             let io = TokioIo::new(io.into_inner());
 
             if is_https {
+              let tls = Arc::new(create_client_config(
+                server_cert_verifier,
+                client_cert_chain_and_key.into(),
+                ech_mode,
+              ));
+              let tls = TlsConnector::from(tls);
               let tokio_io = TokioIo::new(io);
               let io = tls
                 .connect(TryFrom::try_from(host.to_owned())?, tokio_io)
@@ -700,20 +747,130 @@ where
       };
     }
 
-    let mut connector =
-      HttpsConnector::from((self.http.clone(), self.tls.clone()));
-    Box::pin(
-      connector
-        .call(orig_dst)
-        .map_ok(Proxied::PassThrough)
-        .map_err(Into::into),
-    )
+    let http = self.http.clone();
+    let server_cert_verifier = self.server_cert_verifier.clone();
+    let client_cert_chain_and_key = self.client_cert_chain_and_key.clone();
+    let https_resolver = self.https_resolver.clone();
+    Box::pin(async move {
+      let (dst, ech_mode) =
+        match lookup_https(&https_resolver, &orig_dst).await? {
+          Some(https) => {
+            let mut parts = orig_dst.into_parts();
+            parts.scheme = Some(Scheme::HTTPS);
+            parts.authority = Some(https.target);
+            let dst = Uri::from_parts(parts).unwrap();
+            (dst, https.ech_config.map(Into::into))
+          }
+          None => (orig_dst, None),
+        };
+      let tls = Arc::new(create_client_config(
+        server_cert_verifier,
+        client_cert_chain_and_key.into(),
+        ech_mode,
+      ));
+      let mut connector = HttpsConnector::from((http, tls));
+      Ok(Proxied::PassThrough(connector.call(dst).await?))
+    })
   }
+}
+
+struct Https {
+  priority: u16,
+  target: Authority,
+  ech_config: Option<EchConfig>,
+}
+
+async fn lookup_https(
+  resolver: &hickory_resolver::TokioResolver,
+  uri: &Uri,
+) -> Result<Option<Https>, hickory_resolver::ResolveError> {
+  if uri.scheme() != Some(&Scheme::HTTPS) {
+    return Ok(None);
+  }
+  let Ok(orig_host) = uri.host().unwrap().parse::<hickory_resolver::Name>()
+  else {
+    return Ok(None);
+  };
+  let orig_port = uri.port_u16().unwrap_or(443);
+  let qname = match orig_port {
+    443 => orig_host.clone(),
+    _ => format!("_{orig_port}._https.{orig_host}").parse().unwrap(),
+  };
+  let lookup = match resolver.lookup(qname, RecordType::HTTPS).await {
+    Ok(lookup) => lookup,
+    Err(e) if e.is_no_records_found() => return Ok(None),
+    Err(e) => return Err(e),
+  };
+  let mut best = None::<Https>;
+  'rrset: for rr in lookup.iter() {
+    let RData::HTTPS(rr) = rr else { continue };
+    if rr.svc_priority() == 0 {
+      return Ok(None);
+    }
+    let priority = rr.svc_priority().wrapping_neg();
+    if let Some(best) = &best
+      && priority < best.priority
+    {
+      continue;
+    }
+    let target_name = rr.target_name();
+    if !target_name.is_fqdn() {
+      continue;
+    }
+    let mut port = orig_port;
+    let mut supported_alpn = false;
+    let mut default_alpn = true;
+    let mut ech_config = None;
+    for (_, value) in rr.svc_params() {
+      match value {
+        SvcParamValue::Mandatory(Mandatory(mandatory)) => {
+          for key in mandatory {
+            if !matches!(
+              key,
+              SvcParamKey::Alpn
+                | SvcParamKey::NoDefaultAlpn
+                | SvcParamKey::Port
+                | SvcParamKey::EchConfigList
+            ) {
+              continue 'rrset;
+            }
+          }
+        }
+        SvcParamValue::Alpn(Alpn(alpn)) => {
+          supported_alpn =
+            alpn.iter().any(|s| matches!(s.as_str(), "http/1.1" | "h2"))
+        }
+        SvcParamValue::NoDefaultAlpn => default_alpn = false,
+        SvcParamValue::Port(p) => port = *p,
+        SvcParamValue::EchConfigList(EchConfigList(ecl)) => {
+          match EchConfig::new((**ecl).into(), ALL_SUPPORTED_SUITES) {
+            Ok(selected) => ech_config = Some(selected),
+            _ => continue 'rrset,
+          }
+        }
+        _ => {}
+      }
+    }
+    if !supported_alpn && !default_alpn {
+      continue;
+    }
+    let host = if target_name.is_root() {
+      &orig_host
+    } else {
+      target_name
+    };
+    best = Some(Https {
+      priority,
+      target: format!("{host}:{port}").parse().unwrap(),
+      ech_config,
+    });
+  }
+  Ok(best)
 }
 
 async fn tunnel<T>(
   io: &mut T,
-  dst: &Uri,
+  dst: &Authority,
   user_agent: Option<HeaderValue>,
   auth: Option<HeaderValue>,
 ) -> Result<(), BoxError>
@@ -723,15 +880,8 @@ where
   use tokio::io::AsyncReadExt;
   use tokio::io::AsyncWriteExt;
 
-  let host = dst.host().expect("proxy dst has host");
-  let port = match dst.port() {
-    Some(p) => p.as_u16(),
-    None => match dst.scheme().map(Scheme::as_str).unwrap_or("") {
-      "https" => 443,
-      "http" => 80,
-      _ => return Err("proxy dst unexpected scheme".into()),
-    },
-  };
+  let host = dst.host();
+  let port = dst.port_u16().unwrap_or(443);
 
   let mut buf = format!(
     "\
