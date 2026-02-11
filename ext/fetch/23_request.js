@@ -402,7 +402,7 @@ class Request {
 
     // 29 & 30.
     if (signal !== null) {
-      this[_signalCache] = createDependentAbortSignal([signal], prefix);
+      this[_signalCache] = createDependentAbortSignal([signal]);
     }
 
     // 31.
@@ -502,7 +502,6 @@ class Request {
   }
 
   clone() {
-    const prefix = "Failed to execute 'Request.clone'";
     webidl.assertBranded(this, RequestPrototype);
     if (this[_body] && this[_body].unusable()) {
       throw new TypeError("Body is unusable");
@@ -510,10 +509,7 @@ class Request {
     const clonedReq = cloneInnerRequest(this[_request]);
 
     const materializedSignal = this[_signal];
-    const clonedSignal = createDependentAbortSignal(
-      [materializedSignal],
-      prefix,
-    );
+    const clonedSignal = createDependentAbortSignal([materializedSignal]);
 
     const request = new Request(_brand);
     request[_request] = clonedReq;
