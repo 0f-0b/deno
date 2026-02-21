@@ -1013,7 +1013,9 @@ impl Default for CreateHttpClientOptions {
 #[class(type)]
 pub enum HttpClientCreateError {
   #[error(transparent)]
-  Tls(deno_tls::TlsError),
+  Tls(#[from] deno_tls::TlsError),
+  #[error(transparent)]
+  Hickory(#[from] hickory_resolver::ResolveError),
   #[error("Illegal characters in User-Agent: received {0}")]
   InvalidUserAgent(String),
   #[error("Invalid address: {0}")]
@@ -1045,21 +1047,20 @@ pub fn create_http_client(
   user_agent: &str,
   options: CreateHttpClientOptions,
 ) -> Result<Client, HttpClientCreateError> {
-  let mut tls_config = deno_tls::create_client_config(
+  let server_cert_verifier =
     deno_tls::create_certificate_verifier(deno_tls::CertVerifierOptions {
       root_cert_store: options.root_cert_store,
       ca_certs: options.ca_certs,
       unsafely_ignore_certificate_errors: options
         .unsafely_ignore_certificate_errors,
       ..Default::default()
-    })
-    .map_err(HttpClientCreateError::Tls)?,
-    options.client_cert_chain_and_key.into(),
+    })?;
+  let client_cert_chain_and_key = options.client_cert_chain_and_key;
+  let proxy_tls_config = Arc::new(deno_tls::create_client_config(
+    server_cert_verifier.clone(),
+    client_cert_chain_and_key.clone().into(),
     None,
-  )?;
-
-  // Proxy TLS should not send ALPN
-  let proxy_tls_config = Arc::from(tls_config.clone());
+  )?);
 
   let mut alpn_protocols = vec![];
   if options.http2 {
@@ -1068,8 +1069,8 @@ pub fn create_http_client(
   if options.http1 {
     alpn_protocols.push("http/1.1".into());
   }
-  tls_config.alpn_protocols = alpn_protocols;
-  let tls_config = Arc::from(tls_config);
+  let https_resolver =
+    Arc::new(hickory_resolver::Resolver::builder_tokio()?.build());
 
   let local_address = options
     .local_address
@@ -1081,7 +1082,7 @@ pub fn create_http_client(
     .transpose()?;
   let permissions = options.permissions.clone();
   let http_connector = dns::PermissionedHttpConnector::new(
-    options.dns_resolver.clone(),
+    options.dns_resolver,
     local_address,
     options.permissions,
     options.resolved_deny_check_kind,
@@ -1164,7 +1165,10 @@ pub fn create_http_client(
   let connector = proxy::ProxyConnector {
     http: http_connector,
     proxies,
-    tls: tls_config,
+    server_cert_verifier,
+    client_cert_chain_and_key,
+    alpn_protocols,
+    https_resolver,
     tls_proxy: proxy_tls_config,
     user_agent: Some(user_agent.clone()),
     permissions,
