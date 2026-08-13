@@ -980,15 +980,14 @@ function fetch(input, init = undefined) {
 }
 
 function abortFetch(request, responseObject, error) {
-  if (request.body !== null) {
-    // Cancel the body if we haven't taken it as a resource yet
-    if (!request.body.streamOrStatic.locked) {
-      request.body.cancel(error);
-    }
+  if (request.body !== null && request.body.readable()) {
+    request.body.cancel(error);
   }
   if (responseObject !== null) {
     const response = toInnerResponse(responseObject);
-    if (response.body !== null) response.body.error(error);
+    if (response.body !== null && response.body.readable()) {
+      response.body.error(error);
+    }
   }
   return error;
 }
