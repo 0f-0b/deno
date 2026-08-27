@@ -44,10 +44,12 @@ const {
 const mimesniff = core.loadExtScript("ext:deno_web/01_mimesniff.js");
 const { BlobPrototype } = core.loadExtScript("ext:deno_web/09_file.js");
 const {
+  cancelReadableStream,
   createProxy,
   createReadableStream,
   errorReadableStream,
   isReadableStreamDisturbed,
+  isReadableStreamReadable,
   readableStreamClose,
   readableStreamCollectIntoUint8Array,
   readableStreamDisturb,
@@ -182,6 +184,21 @@ class InnerBody {
   }
 
   /**
+   * @returns {boolean}
+   */
+  readable() {
+    if (
+      ObjectPrototypeIsPrototypeOf(
+        ReadableStreamPrototype,
+        this.streamOrStatic,
+      )
+    ) {
+      return isReadableStreamReadable(this.streamOrStatic);
+    }
+    return !this.streamOrStatic.consumed;
+  }
+
+  /**
    * https://fetch.spec.whatwg.org/#concept-body-consume-body
    * @returns {Promise<Uint8Array>}
    */
@@ -219,7 +236,7 @@ class InnerBody {
         this.streamOrStatic,
       )
     ) {
-      this.streamOrStatic.cancel(error);
+      cancelReadableStream(this.streamOrStatic, error);
     } else {
       this.streamOrStatic.consumed = true;
     }

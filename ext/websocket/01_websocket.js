@@ -542,7 +542,11 @@ class WebSocket extends EventTarget {
               this.dispatchEvent(errEvent);
 
               emitWebSocketClosed(this);
-              const event = new CloseEvent("close");
+              const event = new CloseEvent("close", {
+                wasClean: false,
+                code: 1006,
+                reason: "",
+              });
               this.dispatchEvent(event);
               core.tryClose(this[_rid]);
             },
@@ -571,7 +575,11 @@ class WebSocket extends EventTarget {
         }
 
         emitWebSocketClosed(this);
-        const closeEv = new CloseEvent("close");
+        const closeEv = new CloseEvent("close", {
+          wasClean: false,
+          code: 1006,
+          reason: "",
+        });
         this.dispatchEvent(closeEv);
       },
     );
@@ -743,7 +751,11 @@ class WebSocket extends EventTarget {
           this.dispatchEvent(errorEv);
 
           emitWebSocketClosed(this);
-          const closeEv = new CloseEvent("close");
+          const closeEv = new CloseEvent("close", {
+            wasClean: false,
+            code: 1006,
+            reason: "",
+          });
           this.dispatchEvent(closeEv);
           core.tryClose(this[_rid]);
         },
@@ -763,7 +775,11 @@ class WebSocket extends EventTarget {
         this[_readyState] = CLOSED;
 
         emitWebSocketClosed(this);
-        const event = new CloseEvent("close");
+        const event = new CloseEvent("close", {
+          wasClean: false,
+          code: 1006,
+          reason: "",
+        });
         this.dispatchEvent(event);
         core.tryClose(rid);
         break;
@@ -832,7 +848,11 @@ class WebSocket extends EventTarget {
           this.dispatchEvent(errorEv);
 
           emitWebSocketClosed(this);
-          const closeEv = new CloseEvent("close");
+          const closeEv = new CloseEvent("close", {
+            wasClean: false,
+            code: 1006,
+            reason: "",
+          });
           this.dispatchEvent(closeEv);
           core.tryClose(rid);
           break;
