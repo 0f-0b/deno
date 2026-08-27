@@ -90,6 +90,7 @@ const location = core.loadExtScript("ext:deno_web/12_location.js");
 const version = core.loadExtScript("ext:runtime/01_version.ts");
 const os = core.loadExtScript("ext:deno_os/30_os.js");
 const {
+  formatValue,
   getConsoleInspectOptions,
   getDefaultInspectOptions,
   getStderrNoColor,
@@ -436,15 +437,10 @@ function formatException(error) {
     ObjectPrototypeIsPrototypeOf(ErrorPrototype, error)
   ) {
     return null;
-  } else if (typeof error == "string") {
-    return `Uncaught ${
-      inspectArgs([quoteString(error, getDefaultInspectOptions())], {
-        colors: !getStderrNoColor(),
-      })
-    }`;
-  } else {
-    return `Uncaught ${inspectArgs([error], { colors: !getStderrNoColor() })}`;
   }
+  return `Uncaught ${
+    formatValue(getConsoleInspectOptions(getStderrNoColor()), error, 0)
+  }`;
 }
 
 core.registerErrorClass("NotFound", errors.NotFound);

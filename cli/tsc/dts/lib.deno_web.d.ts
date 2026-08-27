@@ -646,7 +646,7 @@ declare var AbortSignal: typeof globalThis extends
   readonly prototype: AbortSignal;
   new (): never;
   abort(reason?: any): AbortSignal;
-  any(signals: AbortSignal[]): AbortSignal;
+  any(signals: Iterable<AbortSignal>): AbortSignal;
   timeout(milliseconds: number): AbortSignal;
 };
 
@@ -1313,7 +1313,7 @@ interface GenericTransformStream {
 }
 
 /** @category Events */
-type MessageEventSource = Window | MessagePort;
+type MessageEventSource = MessagePort;
 
 /** @category Events */
 interface MessageEventInit<T = any> extends EventInit {

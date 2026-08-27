@@ -712,6 +712,12 @@ declare namespace Deno {
       | { type: "min"; value: KvU64 }
     );
 
+  abstract class AsyncIterator<T, R = undefined, S = unknown> {
+    abstract next(value?: S): Promise<IteratorResult<T, R>>;
+  }
+
+  interface AsyncIterator<T, R, S> extends AsyncIteratorObject<T, R, S> {}
+
   /** **UNSTABLE**: New API, yet to be vetted.
    *
    * An iterator over a range of data entries in a {@linkcode Deno.Kv}.
@@ -722,7 +728,7 @@ declare namespace Deno {
    * @category Cloud
    * @experimental
    */
-  export class KvListIterator<T> implements AsyncIterableIterator<KvEntry<T>> {
+  export class KvListIterator<T> extends AsyncIterator<KvEntry<T>> {
     /**
      * Returns the cursor of the current position in the iteration. This cursor
      * can be used to resume the iteration from the current position in the
@@ -731,7 +737,6 @@ declare namespace Deno {
     get cursor(): string;
 
     next(): Promise<IteratorResult<KvEntry<T>, undefined>>;
-    [Symbol.asyncIterator](): AsyncIterableIterator<KvEntry<T>>;
   }
 
   /** **UNSTABLE**: New API, yet to be vetted.
