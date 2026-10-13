@@ -813,18 +813,36 @@ pub fn format_error<'s, 'i>(
   };
 
   // Push "cause" if present and not already listed.
-  let has_cause = {
+  if !keys
+    .iter()
+    .any(|k| key_string(scope, k).as_deref() == Some("cause"))
+  {
     v8::tc_scope!(tc, scope);
-    let key = v8_str(tc, "cause");
-    err.has(tc, key.into()).unwrap_or(false)
-  };
-  if has_cause {
-    let already = keys
-      .iter()
-      .any(|k| key_string(scope, k).as_deref() == Some("cause"));
-    if keys.is_empty() || !already {
-      let cause_key = v8_str(scope, "cause");
-      keys.push(cause_key.into());
+    let key = v8_str(tc, "cause").into();
+    if err.has(tc, key).unwrap_or(false) {
+      keys.push(key);
+    }
+  }
+
+  if !keys
+    .iter()
+    .any(|k| key_string(scope, k).as_deref() == Some("error"))
+  {
+    v8::tc_scope!(tc, scope);
+    let key = v8_str(tc, "error").into();
+    if err.has(tc, key).unwrap_or(false) {
+      keys.push(key);
+    }
+  }
+
+  if !keys
+    .iter()
+    .any(|k| key_string(scope, k).as_deref() == Some("suppressed"))
+  {
+    v8::tc_scope!(tc, scope);
+    let key = v8_str(tc, "suppressed").into();
+    if err.has(tc, key).unwrap_or(false) {
+      keys.push(key);
     }
   }
 
