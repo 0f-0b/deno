@@ -183,16 +183,15 @@ class AbortSignal extends EventTarget {
     );
 
     const signal = new AbortSignal(illegalConstructorKey);
+    const timeoutError = new DOMException(
+      "The operation was aborted due to timeout",
+      "TimeoutError",
+    );
     signal[timerId] = core.createSystemTimer(
       () => {
         core.cancelTimer(signal[timerId]);
         signal[timerId] = null;
-        signal[signalAbort](
-          new DOMException(
-            "The operation was aborted due to timeout",
-            "TimeoutError",
-          ),
-        );
+        signal[signalAbort](timeoutError);
       },
       millis,
       false, // start unrefed (like Node.js)

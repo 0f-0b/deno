@@ -8,9 +8,7 @@ use deno_terminal::colors;
 use crate::args::CheckFlags;
 use crate::args::Flags;
 use crate::factory::CliFactory;
-use crate::graph_container::CheckSpecifiersOptions;
-use crate::graph_container::CollectSpecifiersOptions;
-use crate::util::extract;
+use crate::util::extract::extract_snippet_files;
 use crate::util::file_watcher;
 
 pub async fn check(
@@ -45,46 +43,40 @@ async fn check_with_factory(
   factory: &CliFactory,
   check_flags: CheckFlags,
 ) -> Result<(), AnyError> {
-  let main_graph_container = factory.main_module_graph_container().await?;
-
-  let specifiers = main_graph_container.collect_specifiers(
+  let graph_container = factory.main_module_graph_container().await?;
+  let mut roots = graph_container.collect_specifiers(
     &check_flags.files,
-    CollectSpecifiersOptions {
+    crate::graph_container::CollectSpecifiersOptions {
       include_ignored_specified: false,
     },
   )?;
-  if specifiers.is_empty() {
+  if roots.is_empty() {
     log::warn!("{} No matching files found.", colors::yellow("Warning"));
+    return Ok(());
   }
 
-  let specifiers_for_typecheck = if check_flags.doc || check_flags.doc_only {
+  if check_flags.doc || check_flags.doc_only {
     let file_fetcher = factory.file_fetcher()?;
     let root_permissions = factory.root_permissions_container()?;
+    let specifiers = roots.clone();
 
-    let mut specifiers_for_typecheck = if check_flags.doc {
-      specifiers.clone()
-    } else {
-      vec![]
-    };
+    if check_flags.doc_only {
+      roots.clear();
+    }
 
     for s in specifiers {
       let file = file_fetcher.fetch(&s, root_permissions).await?;
-      let snippet_files = extract::extract_snippet_files(file)?;
-      for snippet_file in snippet_files {
-        specifiers_for_typecheck.push(snippet_file.url.clone());
+      for snippet_file in extract_snippet_files(file)? {
+        roots.push(snippet_file.url.clone());
         file_fetcher.insert_memory_files(snippet_file);
       }
     }
+  }
 
-    specifiers_for_typecheck
-  } else {
-    specifiers
-  };
-
-  main_graph_container
+  graph_container
     .check_specifiers(
-      &specifiers_for_typecheck,
-      CheckSpecifiersOptions {
+      &roots,
+      crate::graph_container::CheckSpecifiersOptions {
         allow_unknown_media_types: true,
         ..Default::default()
       },

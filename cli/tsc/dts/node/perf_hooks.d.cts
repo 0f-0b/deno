@@ -917,31 +917,19 @@ declare module "perf_hooks" {
          * @see https://nodejs.org/docs/latest-v24.x/api/globals.html#performanceobserver
          * @since v19.0.0
          */
-        var PerformanceObserver: typeof globalThis extends {
-            onmessage: any;
-            PerformanceObserver: infer T;
-        } ? T
-            : typeof _PerformanceObserver;
+        var PerformanceObserver: typeof _PerformanceObserver;
         /**
          * `PerformanceObserverEntryList` is a global reference for `import { PerformanceObserverEntryList } from 'node:perf_hooks'`
          * @see https://nodejs.org/docs/latest-v24.x/api/globals.html#performanceobserverentrylist
          * @since v19.0.0
          */
-        var PerformanceObserverEntryList: typeof globalThis extends {
-            onmessage: any;
-            PerformanceObserverEntryList: infer T;
-        } ? T
-            : typeof _PerformanceObserverEntryList;
+        var PerformanceObserverEntryList: typeof _PerformanceObserverEntryList;
         /**
          * `PerformanceResourceTiming` is a global reference for `import { PerformanceResourceTiming } from 'node:perf_hooks'`
          * @see https://nodejs.org/docs/latest-v24.x/api/globals.html#performanceresourcetiming
          * @since v19.0.0
          */
-        var PerformanceResourceTiming: typeof globalThis extends {
-            onmessage: any;
-            PerformanceResourceTiming: infer T;
-        } ? T
-            : typeof _PerformanceResourceTiming;
+        var PerformanceResourceTiming: typeof _PerformanceResourceTiming;
     }
 }
 declare module "node:perf_hooks" {

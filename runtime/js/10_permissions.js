@@ -273,15 +273,7 @@ const permissions = new Permissions(illegalConstructorKey);
 function serializePermissions(permissions) {
   if (typeof permissions == "object" && permissions != null) {
     const serializedPermissions = { __proto__: null };
-    for (
-      const key of new SafeArrayIterator([
-        "read",
-        "write",
-        "run",
-        "ffi",
-        "import",
-      ])
-    ) {
+    for (const key of new SafeArrayIterator(["read", "write", "run", "ffi"])) {
       if (ArrayIsArray(permissions[key])) {
         serializedPermissions[key] = ArrayPrototypeMap(
           permissions[key],
@@ -291,9 +283,7 @@ function serializePermissions(permissions) {
         serializedPermissions[key] = permissions[key];
       }
     }
-    for (
-      const key of new SafeArrayIterator(["env", "net", "sys"])
-    ) {
+    for (const key of new SafeArrayIterator(["env", "net", "sys", "import"])) {
       if (ArrayIsArray(permissions[key])) {
         serializedPermissions[key] = ArrayPrototypeSlice(permissions[key]);
       } else {
