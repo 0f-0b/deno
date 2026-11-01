@@ -122,7 +122,7 @@ impl FileSystem for RealFs {
     let (std_file, path) = std_file;
     Ok(Rc::new(StdFileResourceInner::file(
       std_file,
-      Some(path.to_path_buf()),
+      Some(path.into_path_buf()),
     )))
   }
 
@@ -497,7 +497,7 @@ impl FileSystem for RealFs {
       let mut file = open_with_checked_path(options, &path.as_checked_path())?;
       let mut buf = Vec::new();
       file.read_to_end(&mut buf)?;
-      Ok::<_, FsError>(Cow::Owned(buf))
+      Ok(Cow::Owned(buf))
     })
     .await?
   }

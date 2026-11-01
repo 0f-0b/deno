@@ -3,13 +3,9 @@
 //! Parts of this module should be able to be replaced with other crates
 //! eventually, once generic versions appear in hyper-util, et al.
 
-#[cfg(not(windows))]
-use std::borrow::Cow;
 use std::env;
 use std::future::Future;
 use std::net::IpAddr;
-#[cfg(not(windows))]
-use std::path::Path;
 #[cfg(not(windows))]
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -17,8 +13,6 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-#[cfg(not(windows))]
-use deno_permissions::OpenAccessKind;
 use deno_permissions::PermissionsContainer;
 use deno_tls::TlsKey;
 use deno_tls::create_client_config;
@@ -650,11 +644,7 @@ where
 
             if is_https {
               tunnel(&mut io, dst, user_agent, auth).await?;
-              let host = orig_dst.host().unwrap();
-              let host = host
-                .strip_prefix('[')
-                .and_then(|s| s.strip_suffix(']'))
-                .unwrap_or(host);
+              let host = strip_brackets(orig_dst.host().unwrap());
               let tls = Arc::new(create_client_config(
                 server_cert_verifier,
                 client_cert_chain_and_key.into(),
@@ -679,23 +669,12 @@ where
           let client_cert_chain_and_key =
             self.client_cert_chain_and_key.clone();
           let https_resolver = self.https_resolver.clone();
-          let mut permissions = self.permissions.clone();
           Box::pin(async move {
             let socks_addr = (
-              proxy_dst.host().unwrap(),
+              strip_brackets(proxy_dst.host().unwrap()),
               proxy_dst.port_u16().unwrap_or(1080),
             );
-            if let Some(permissions) = permissions.as_mut() {
-              permissions.check_net(
-                &(socks_addr.0, Some(socks_addr.1)),
-                "fetch() proxy",
-              )?;
-            }
-            let host = orig_dst.host().unwrap();
-            let host = host
-              .strip_prefix('[')
-              .and_then(|s| s.strip_suffix(']'))
-              .unwrap_or(host);
+            let host = strip_brackets(orig_dst.host().unwrap());
             let dst;
             let (dst, ech_mode) =
               match lookup_https(&https_resolver, &orig_dst).await? {
@@ -758,21 +737,8 @@ where
         }
         #[cfg(not(windows))]
         Target::Unix { path } => {
-          let mut path = path.clone();
-          let mut permissions = self.permissions.clone();
+          let path = path.clone();
           Box::pin(async move {
-            if let Some(permissions) = permissions.as_mut() {
-              let resolved_path = permissions
-                .check_open(
-                  Cow::Borrowed(Path::new(&path)),
-                  OpenAccessKind::ReadWriteNoFollow,
-                  Some("fetch() proxy"),
-                )?
-                .into_path();
-              permissions
-                .check_net_unix_socket(&resolved_path, Some("fetch() proxy"))?;
-              path = resolved_path.into_owned();
-            }
             let io = UnixStream::connect(&path).await?;
             Ok(Proxied::Unix(TokioIo::new(io)))
           })
@@ -782,17 +748,11 @@ where
           target_os = "linux",
           target_os = "macos"
         ))]
-        Target::Vsock { cid, port } => {
-          let mut permissions = self.permissions.clone();
-          Box::pin(async move {
-            if let Some(permissions) = permissions.as_mut() {
-              permissions.check_net_vsock(cid, port, "fetch() proxy")?;
-            }
-            let addr = tokio_vsock::VsockAddr::new(cid, port);
-            let io = VsockStream::connect(addr).await?;
-            Ok(Proxied::Vsock(TokioIo::new(io)))
-          })
-        }
+        Target::Vsock { cid, port } => Box::pin(async move {
+          let addr = tokio_vsock::VsockAddr::new(cid, port);
+          let io = VsockStream::connect(addr).await?;
+          Ok(Proxied::Vsock(TokioIo::new(io)))
+        }),
       };
       return Box::pin(async move {
         check_dst.await?;
@@ -820,11 +780,7 @@ where
       let io = http.call(dst.clone()).await.map_err(Into::into)?;
 
       if is_https {
-        let host = orig_dst.host().unwrap();
-        let host = host
-          .strip_prefix('[')
-          .and_then(|s| s.strip_suffix(']'))
-          .unwrap_or(host);
+        let host = strip_brackets(orig_dst.host().unwrap());
         let tls = Arc::new(create_client_config(
           server_cert_verifier,
           client_cert_chain_and_key.into(),
@@ -841,6 +797,13 @@ where
       }
     })
   }
+}
+
+fn strip_brackets(host: &str) -> &str {
+  host
+    .strip_prefix('[')
+    .and_then(|s| s.strip_suffix(']'))
+    .unwrap_or(host)
 }
 
 struct Https {

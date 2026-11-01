@@ -1214,7 +1214,6 @@ impl CliOptions {
       &self.flags.permissions,
       config_permissions,
     )?;
-    self.augment_import_permissions(&mut permissions_options);
     if let DenoSubcommand::Serve(serve_flags) = &self.flags.subcommand {
       augment_permissions_with_serve_flags(
         &mut permissions_options,

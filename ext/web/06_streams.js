@@ -896,6 +896,15 @@ function isReadableStream(value) {
  * @param {ReadableStream} stream
  * @returns {boolean}
  */
+function isReadableStreamReadable(stream) {
+  assert(isReadableStream(stream));
+  return stream[_state] === "readable";
+}
+
+/**
+ * @param {ReadableStream} stream
+ * @returns {boolean}
+ */
 function isReadableStreamLocked(stream) {
   return stream[_reader] !== undefined;
 }
@@ -6351,7 +6360,20 @@ webidl.configureInterface(ReadableStream);
 const ReadableStreamPrototype = ReadableStream.prototype;
 
 function errorReadableStream(stream, e) {
-  readableStreamDefaultControllerError(stream[_controller], e);
+  if (
+    ObjectPrototypeIsPrototypeOf(
+      ReadableByteStreamControllerPrototype,
+      stream[_controller],
+    )
+  ) {
+    readableByteStreamControllerError(stream[_controller], e);
+  } else {
+    readableStreamDefaultControllerError(stream[_controller], e);
+  }
+}
+
+function cancelReadableStream(stream, reason) {
+  return readableStreamCancel(stream, reason);
 }
 
 // A ReadRequest backed by a class instead of an object literal with closure
@@ -8490,6 +8512,7 @@ return {
   // Exposed in global runtime scope
   acquireReadableStreamDefaultReader,
   ByteLengthQueuingStrategy,
+  cancelReadableStream,
   CountQueuingStrategy,
   createProxy,
   createReadableByteStream,
@@ -8505,6 +8528,7 @@ return {
   isReadableStreamBYOBRequest,
   isDetachedBuffer,
   isReadableStreamDisturbed,
+  isReadableStreamReadable,
   isReadableStreamLocked,
   isReadableStreamDefaultReader,
   ReadableByteStreamController,
